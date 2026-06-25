@@ -24,7 +24,9 @@ endif(CMAKE_CXX_FLAGS)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS_INIT}" CACHE STRING "Flags used by the compiler during all build types." FORCE)
 
 if(NOT CMAKE_CXX_ABI)
-    set(CMAKE_CXX_ABI 0 CACHE STRING
+    # Default to 1 to match modern PyTorch (>=2.x), which is built with
+    # _GLIBCXX_USE_CXX11_ABI=1; mismatch breaks linking against libtorch.
+    set(CMAKE_CXX_ABI 1 CACHE STRING
         "Choose the value for _GLIBCXX_USE_CXX11_ABI, options are: 0|1."
         FORCE)
 endif(NOT CMAKE_CXX_ABI)
@@ -119,19 +121,10 @@ set(HETEROSTA_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/HeteroSTA)
 
 if (CUDA_FOUND)
   if (NOT CMAKE_CUDA_ARCHITECTURES)
-    # Architectures supported by cuda_select_nvcc_arch_flags
-    set(CMAKE_CUDA_ARCHITECTURES 6.0 6.1 7.0)
-    if (${CUDA_VERSION_MAJOR} VERSION_GREATER "9")
-      list(APPEND CMAKE_CUDA_ARCHITECTURES 7.5)
-    endif(${CUDA_VERSION_MAJOR} VERSION_GREATER "9")
-    if (${CUDA_VERSION_MAJOR} VERSION_GREATER "10")
-      list(APPEND CMAKE_CUDA_ARCHITECTURES 8.0)
-      # arch 8.6 removed for compatability with 3090
-      # list(APPEND CMAKE_CUDA_ARCHITECTURES 8.6)
-    endif(${CUDA_VERSION_MAJOR} VERSION_GREATER "10")
-    if (${CUDA_VERSION_MAJOR} VERSION_GREATER_EQUAL "11")
-      list(APPEND CMAKE_CUDA_ARCHITECTURES 8.6)
-    endif(${CUDA_VERSION_MAJOR} VERSION_GREATER_EQUAL "11")
+    # Target Ampere and newer only (compute 8.0+). The older Pascal/Volta/Turing
+    # arches (6.0/6.1/7.0/7.5) are removed in CUDA 13, where nvcc rejects them
+    # outright. Override with -DCMAKE_CUDA_ARCHITECTURES=... if you need others.
+    set(CMAKE_CUDA_ARCHITECTURES 8.0 8.6)
     if (${CUDA_VERSION_MAJOR} VERSION_GREATER_EQUAL "12")
       list(APPEND CMAKE_CUDA_ARCHITECTURES 8.9 9.0)
     endif(${CUDA_VERSION_MAJOR} VERSION_GREATER_EQUAL "12")
