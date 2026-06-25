@@ -81,6 +81,24 @@ python unittest/ops/place_io_unittest/place_io_unittest.py
 
 **Third party** (`thirdparty/`, git submodules): Limbo (parsers/util), OpenTimer (STA), HeteroSTA (GPU STA), cub, pybind11, munkres-cpp, flute, NCTUgr (routability).
 
+## GangSTA timer backend (WIP — `timer_engine=gangsta`)
+
+A third timer engine backed by the external [GangSTA](../) STA engine is being added beside
+`opentimer`/`heterosta`. GangSTA's C API is a functional-parity clone of `heterosta.h`, so the new
+op `dreamplace/ops/timing_gangsta/` is a copy of `timing_heterosta/` with the calls remapped.
+
+**Status:** GangSTA-side enabling work is **done and unit-tested in the gangsta repo** — in-memory
+netlist ingestion (`gangsta_set_netlist_inmem`, the `set_netlistdb` equivalent, byte-identical to a
+Verilog build) and RC-from-placement (`gangsta_extract_rc_from_placement`, CPU star model). The
+DREAMPlace op is a **WIP scaffold (mechanical renames only) that does NOT yet build** and is
+intentionally not registered in `dreamplace/ops/CMakeLists.txt`. Finishing it needs the seam work in
+`dreamplace/ops/timing_gangsta/README.md` — including semantic seams that are wrong-by-default for
+GangSTA (0-based cell indexing, keep the `:` pin-name separator, top-port direction inversion, a
+gangsta pin-renumbering permutation, RC unit scaling). **Those cannot be validated without an
+ICCAD-2015 timing design, which is not in the local corpus** (`benchmarks/` has only LEF/DEF ispd
+sets, no `*_Early/_Late.lib`/`.sdc`), so the op stays disabled until a real run can be compared
+against `heterosta`. See `dreamplace/ops/timing_gangsta/README.md` for the full completion recipe.
+
 ## Conventions
 
 - File headers use the `## @file / @author / @date / @brief` Doxygen-style block; match it in new files.
