@@ -102,12 +102,17 @@ a real timing-driven loop where WNS improves (−43.96 → −26.6 ns over 5 tim
 convention, so do NOT invert — gangsta↔dreamplace slack permutation, ff/kΩ RC units) are documented
 and validated in `dreamplace/ops/timing_gangsta/README.md`.
 
-**Head-to-head vs OpenTimer (`iccad2015.ot/superblue4`, same `.sdc`, deterministic):** gangsta WNS
-tracks OpenTimer within ~1.5–2× over the timing loop (step 1, closest coords: −43.96 vs −54.83 ns —
-~20%), same units/sign/trend; TNS is ~10× more pessimistic, consistent with gangsta's documented star
-RC model vs OpenTimer's. This validates the integration against the gold open reference. (HeteroSTA's
-prebuilt `.so` links `libcudart.so.11.0`/CUDA 11 and won't import on this CUDA-13 box, so OpenTimer was
-the oracle; the `.hs`/`.ot` packages now live in `../benchmarks/iccad2015.{hs,ot}`.)
+**Head-to-head vs HeteroSTA (GPU) on `iccad2015.hs/superblue4`, same `.hs.sdc`, deterministic**
+(first eval = identical coords): step-1 gangsta WNS −35.44 / TNS −870 vs HeteroSTA −54.83 / −625 —
+same sign, units, and order of magnitude (gangsta ~0.65× on WNS, ~1.4× on TNS). HeteroSTA imports and
+runs on this CUDA-13 box once `sta/HeteroSTA/lib` (ships the bundled `libcudart.so.11.0`) is on
+`LD_LIBRARY_PATH` and `HeteroSTA_Lic` is exported. Two fixes unblocked this: (1) gangsta's SDC reader
+now accepts `set_ideal_network` + has an `unknown`-command safety net (gangsta ADR-0020 — the
+`.hs.sdc` uses it; previously the whole parse aborted → NaN); (2) the sibling `timing_heterosta` op
+value-initializes `NetlistDBCppInterface` so the optional CSR pointers are NULL, not stack garbage
+(was a `netlistdb_new` memcpy SIGSEGV). Also cross-checked vs OpenTimer on `iccad2015.ot/superblue4`
+(HeteroSTA ≈ OpenTimer to <1%, both lumped RC). The `.hs`/`.ot` packages live in
+`../benchmarks/iccad2015.{hs,ot}`.
 
 ## Conventions
 

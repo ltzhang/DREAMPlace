@@ -299,8 +299,15 @@ NetlistDB* TimingHeterostaIO::build_netlistdb_from_dreamplace(PlaceDB& placedb,
 		}
 
 
-		// Create NetlistDB interface
-		NetlistDBCppInterface interface;
+		// Create NetlistDB interface.
+		// Value-initialize so every field (including the OPTIONAL CSR arrays
+		// net2pin_start / net2pin_items) starts as nullptr; HeteroSTA treats
+		// NULL as "derive automatically". Without this, the uninitialized
+		// optional pointers hold stack garbage, and netlistdb_new() memcpy's
+		// from the garbage pointer → SIGSEGV.
+		NetlistDBCppInterface interface{};
+		interface.net2pin_start = nullptr;
+		interface.net2pin_items = nullptr;
 		interface.top_design_name = g_netlist_data.design_name.c_str();
 		interface.num_cells = totalcells;
 		interface.num_pins = g_netlist_data.pin_names.size();
