@@ -8,7 +8,6 @@
 #include <pybind11/pybind11.h>
 #include "utility/src/namespace.h"
 #include "utility/src/torch.h"
-#include "netlistdb.h"
 #include "gangsta/gangsta.h"
 #include "place_io/src/PlaceDB.h"
 
@@ -32,13 +31,15 @@ public:
                            const pybind11::dict& dreamplace_mappings);
 
     ///
-    /// @brief Create NetlistDB from DREAMPlace mappings instead of rebuilding from PlaceDB
+    /// @brief Assemble the GangSTA in-memory netlist arrays (g_netlist_data) from DREAMPlace mappings.
+    ///        Unlike HeteroSTA there is no NetlistDB object: build_graph consumes g_netlist_data via
+    ///        gangsta_set_netlist_inmem in buildTimerDB().
     /// @param placedb the placement database containing netlist data
     /// @param dreamplace_mappings packaged DREAMPlace mappings
-    /// @return pointer to NetlistDB or nullptr if failed
+    /// @return true on success, false on failure
     ///
-    static NetlistDB* build_netlistdb_from_dreamplace(PlaceDB& placedb, 
-                                                             const pybind11::dict& dreamplace_mappings);
+    static bool build_netlistdb_from_dreamplace(PlaceDB& placedb,
+                                                const pybind11::dict& dreamplace_mappings);
 
     ///
     /// @brief Initialize GangSTA timer instance
@@ -89,6 +90,20 @@ public:
     ///
     static size_t getPinCount();
 
+    ///
+    /// @brief Build the GangSTA<->DREAMPlace pin permutation maps by name (seam C.4). GangSTA's
+    ///        build_graph renumbers pins, so the host must remap. Call ONCE after buildTimerDB.
+    ///        g2d_[g] = dreamplace pin id for gangsta pin g (or -1); d2g_[d] = gangsta pin id for
+    ///        dreamplace pin d (or -1). Idempotent.
+    /// @param sta reference to the built GangstaTimer
+    /// @return true if every DREAMPlace pin mapped to a gangsta pin
+    ///
+    static bool build_pin_maps(GangstaTimer& sta);
+
+    // Pin permutation maps (seam C.4). Sized to gangsta_num_pins / dreamplace num_pins respectively.
+    static std::vector<int32_t> g2d_;  // gangsta pin id  -> dreamplace pin id
+    static std::vector<int32_t> d2g_;  // dreamplace pin id -> gangsta pin id
+
 private:
     ///
     /// @brief Parse all timing-related command line arguments
@@ -106,14 +121,13 @@ private:
 
 
     ///
-    /// @brief Build timer database 
+    /// @brief Build timer database from the in-memory netlist arrays (g_netlist_data)
     /// @param sta reference to GangstaTimer instance
-    /// @param netlistdb the NetlistDB to be set in GangSTA
     /// @return true if successful, false otherwise
     ///
-    static bool buildTimerDB(GangstaTimer& sta, NetlistDB* netlistdb);
+    static bool buildTimerDB(GangstaTimer& sta);
 
-    // Endpoint information storage 
+    // Endpoint information storage
     static std::vector<uint8_t> timingpin_is_endpoint;
 
 private:

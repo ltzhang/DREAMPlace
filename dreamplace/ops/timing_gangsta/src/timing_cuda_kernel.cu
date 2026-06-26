@@ -87,8 +87,11 @@ void updateNetWeightCudaLauncher(
     int ignore_net_degree)
 {
     float wns = 0.0, tns = 0.0;
-    // Get WNS/TNS from GangSTA directly to GPU memory
-    bool success = heterosta_report_wns_tns_max(sta, &wns, &tns, true);
+    // Get WNS/TNS from GangSTA (setup/max corner). NOTE: GangSTA is CPU-only and its build_graph
+    // renumbers pins, so the gangsta-order slacks here would NOT line up with DREAMPlace's
+    // flat_netpin indexing. This CUDA launcher is therefore retained for ABI/compile parity but the
+    // op routes net-weight updates to the CPU launcher (which applies the seam-C.4 permutation).
+    bool success = gangsta_report_wns_tns(sta, GANGSTA_MAX, &wns, &tns, true);
 
     // Allocate GPU memory for slack array
     float *d_slack_data;
@@ -96,7 +99,7 @@ void updateNetWeightCudaLauncher(
     float (*d_slack_array)[2] = reinterpret_cast<float(*)[2]>(d_slack_data);
 
     // Get pin slacks from GangSTA directly to GPU memory
-    heterosta_report_slacks_at_max(sta, d_slack_array, true);
+    gangsta_report_slacks(sta, GANGSTA_MAX, d_slack_array, true);
 
     // Allocate GPU memory for worst slacks
     float *d_worst_slacks;

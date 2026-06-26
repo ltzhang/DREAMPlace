@@ -4,6 +4,8 @@
 #include <iostream>
 #include <chrono>
 #include <fstream>
+#include <limits>
+#include <vector>
 
 DREAMPLACE_BEGIN_NAMESPACE
 
@@ -55,70 +57,63 @@ int timingHeterostaCppLauncher(
 		int ignore_net_degree, bool use_cuda){
 	dreamplacePrint(kINFO, "GangSTA launcher started\n");
 
-	// Convert coordinates and apply scaling for GangSTA units
+	// Seam C.5: convert per-micron R/C into GangSTA's ff / kohm per DEF-unit distance. The 1e3 / 1e-15
+	// factors take ohm->kohm and F->ff; dividing by unit_to_micron rescales "per micron" into "per DEF
+	// coordinate unit" so a Manhattan distance in DEF units yields ff/kohm. (GangSTA's extract_rc star
+	// model expects exactly ff/kohm, matching HeteroSTA's canonical units here — no extra scaling.)
 	double unit_to_micron = scale_factor * def_unit;
-	double res_unit = 1e3;  // Rust canonical units
+	double res_unit = 1e3;
 	double cap_unit = 1e-15;
 	double rf = static_cast<double>(wire_resistance_per_micron) / res_unit;
-	double cf = static_cast<double>(wire_capacitance_per_micron) / cap_unit;		
+	double cf = static_cast<double>(wire_capacitance_per_micron) / cap_unit;
 	double unit_cap_xy = cf / unit_to_micron;
 	double unit_res_xy = rf / unit_to_micron;
 
 	auto beg = std::chrono::steady_clock::now();
+	(void) use_cuda;  // GangSTA path is CPU-only; coords arrive as host floats.
 
-	dreamplacePrint(kINFO,"extract rc from placement...\n");
+	// Seam C.4: gather per-pin coords into GangSTA pin order (xs_g[g] = x[ g2d[g] ]).
+	const size_t num_g = gangsta_num_pins(&sta);
+	std::vector<float> xs_g(num_g, 0.0f), ys_g(num_g, 0.0f);
+	for (size_t g = 0; g < num_g; ++g) {
+		int32_t d = (g < TimingGangstaIO::g2d_.size()) ? TimingGangstaIO::g2d_[g] : -1;
+		if (d >= 0 && static_cast<size_t>(d) < num_pins) {
+			xs_g[g] = static_cast<float>(x[d]);
+			ys_g[g] = static_cast<float>(y[d]);
+		}
+	}
 
-	auto device = use_cuda ? torch::kCUDA : torch::kCPU;
+	dreamplacePrint(kINFO, "extract rc from placement (gangsta pins=%zu)...\n", num_g);
+	const float via_res = 0.0f;
+	const uint32_t flute_accuracy = 8;
+	const float pdr_alpha = 0.3f;
+	const uint8_t use_flute_or_pdr = 0;
+	gangsta_extract_rc_from_placement(&sta, xs_g.data(), ys_g.data(),
+			static_cast<float>(unit_cap_xy), static_cast<float>(unit_cap_xy),
+			static_cast<float>(unit_res_xy), static_cast<float>(unit_res_xy),
+			via_res, flute_accuracy, pdr_alpha, use_flute_or_pdr, /*use_gpu=*/false);
+	if (const char* e = gangsta_last_error(&sta); e && e[0]) {
+		dreamplacePrint(kWARN, "extract_rc_from_placement: %s\n", e);
+	}
 
-	auto via_res_tensor = torch::tensor(0.0f, torch::TensorOptions().dtype(torch::kFloat32).device(device));
-	auto flute_accuracy_tensor = torch::tensor(8, torch::TensorOptions().dtype(torch::kInt32).device(device));
-	auto pdr_alpha_tensor = torch::tensor(0.3f, torch::TensorOptions().dtype(torch::kFloat32).device(device));
-	auto use_flute_or_pdr_tensor = torch::tensor(0, torch::TensorOptions().dtype(torch::kUInt8).device(device));
+	gangsta_update_delay(&sta, false);
+	gangsta_update_arrivals(&sta, false);
+	dreamplacePrint(kINFO, "finish state updates...\n");
 
-	float via_res = via_res_tensor.item<float>();
-	uint32_t flute_accuracy= static_cast<uint32_t>(flute_accuracy_tensor.item<int32_t>());
-	float pdr_alpha = pdr_alpha_tensor.item<float>();
-	uint8_t use_flute_or_pdr = use_flute_or_pdr_tensor.item<uint8_t>();	
-
-	// If gangsta_extract_rc_from_placement panics, the process will terminate
-	gangsta_extract_rc_from_placement(&sta, 
-			reinterpret_cast<const float*>(x), 
-			reinterpret_cast<const float*>(y),
-			static_cast<float>(unit_cap_xy), 
-			static_cast<float>(unit_cap_xy),
-			static_cast<float>(unit_res_xy), 
-			static_cast<float>(unit_res_xy),
-			via_res,flute_accuracy,
-			pdr_alpha,use_flute_or_pdr,	
-			use_cuda);
-	dreamplacePrint(kINFO,"finish rc extraction...\n");
-	gangsta_update_delay(&sta, use_cuda);
-
-	// Update arrival times and required arrival times for timing analysis
-	gangsta_update_arrivals(&sta, use_cuda);
-
-	dreamplacePrint(kINFO,"finish state updates...\n");
-
-	static_assert(sizeof(bool) == 1);
-	static std::vector<uint8_t> timingpin_is_endpoint;
-	timingpin_is_endpoint.resize(num_pins);
-	gangsta_get_is_endpoint(&sta, (bool *) timingpin_is_endpoint.data());
-	//heterosta_launch_debug_shell(&sta);
-
-	// Report pin slacks
-	if(!use_cuda && slacks_rf!=nullptr)
-	{
-		heterosta_report_slacks_at_max(&sta, slacks_rf, use_cuda);
-		dreamplacePrint(kDEBUG, "GangSTA slack report completed\n");
-		dreamplacePrint(kDEBUG, "Sample slacks (rise/fall) for first 10 endpoints:\n");
-		int endpoint_count = 0;
-		for (size_t i = 0; i < num_pins && endpoint_count < 10; ++i) {
-			if (timingpin_is_endpoint[i]) {
-				dreamplacePrint(kDEBUG, "  Endpoint Pin %s (%zu): Rise=%.3f, Fall=%.3f\n",
-						TimingGangstaIO::getPinName(i), i, slacks_rf[i][0], slacks_rf[i][1]);
-				endpoint_count++;
+	// Report pin slacks in GangSTA order, then scatter back to DREAMPlace pin order (seam C.4).
+	if (slacks_rf != nullptr) {
+		std::vector<float> sg(num_g * 2, 0.0f);
+		gangsta_report_slacks(&sta, GANGSTA_MAX, reinterpret_cast<float(*)[2]>(sg.data()), false);
+		for (size_t d = 0; d < num_pins; ++d) {
+			int32_t g = (d < TimingGangstaIO::d2g_.size()) ? TimingGangstaIO::d2g_[d] : -1;
+			if (g >= 0 && static_cast<size_t>(g) < num_g) {
+				slacks_rf[d][0] = sg[g * 2 + 0];
+				slacks_rf[d][1] = sg[g * 2 + 1];
+			} else {
+				slacks_rf[d][0] = slacks_rf[d][1] = 0.0f;
 			}
 		}
+		dreamplacePrint(kDEBUG, "GangSTA slack report completed (scattered to DREAMPlace order)\n");
 	}
 	auto end = std::chrono::steady_clock::now();
 	auto usc = std::chrono::duration_cast<std::chrono::milliseconds>(end - beg);
@@ -146,22 +141,18 @@ void TimingGangstaCpp::forward(
 		slacks_rf_ptr = reinterpret_cast<float (*)[2]>(slacks_rf_data);
 	}
 
-	DREAMPLACE_DISPATCH_FLOATING_TYPES(
-			pos, "timingHeterostaCppLauncher",
-			[&] {
-			timingHeterostaCppLauncher<scalar_t>(
-					sta,
-					DREAMPLACE_TENSOR_DATA_PTR(pos, scalar_t),
-					DREAMPLACE_TENSOR_DATA_PTR(pos, scalar_t) + pos.numel() / 2,
-					num_pins,
-					wire_resistance_per_micron,
-					wire_capacitance_per_micron,
-					scale_factor, lef_unit, def_unit,
-					slacks_rf_ptr,
-					ignore_net_degree,
-					use_cuda
-					);
-			});
+	// GangSTA is CPU-only: hand it a contiguous CPU float32 copy of the per-pin coordinates (laid out
+	// [all x | all y]). The launcher permutes DREAMPlace->GangSTA pin order internally (seam C.4) and
+	// reports back in DREAMPlace order, so use_cuda only affects whether the COORDS originate on GPU.
+	auto pos_cpu = pos.detach().to(torch::kCPU).to(torch::kFloat32).contiguous();
+	const float* xc = pos_cpu.data_ptr<float>();
+	const float* yc = xc + pos_cpu.numel() / 2;
+	timingHeterostaCppLauncher<float>(
+			sta, xc, yc, num_pins,
+			static_cast<float>(wire_resistance_per_micron),
+			static_cast<float>(wire_capacitance_per_micron),
+			scale_factor, lef_unit, def_unit,
+			slacks_rf_ptr, ignore_net_degree, /*use_cuda=*/false);
 }
 
 ///
@@ -201,17 +192,30 @@ void updateNetWeightCppLauncher(
 		int ignore_net_degree, 
 		int num_threads) {
 
-	// Get WNS/TNS from GangSTA
-	float wns, tns;
-	bool success = heterosta_report_wns_tns_max(&sta, &wns, &tns, false);
+	// Get WNS/TNS from GangSTA (setup / max corner).
+	float wns = 0.f, tns = 0.f;
+	bool success = gangsta_report_wns_tns(&sta, GANGSTA_MAX, &wns, &tns, false);
+	(void) success;
 
-	// Get pin slacks from GangSTA
+	// Get pin slacks in GangSTA order, then scatter to DREAMPlace pin order (seam C.4) so the
+	// flat_netpin-indexed net loop below reads the right slack per pin.
+	const size_t num_g = gangsta_num_pins(&sta);
+	static std::vector<float> slack_g;
+	if (slack_g.size() < num_g * 2) slack_g.resize(num_g * 2);
+	gangsta_report_slacks(&sta, GANGSTA_MAX, reinterpret_cast<float(*)[2]>(slack_g.data()), false);
+
 	static std::vector<float> slack_data;
-	if (slack_data.size() < num_pins * 2) {
-		slack_data.resize(num_pins * 2);
-	}
+	if (slack_data.size() < static_cast<size_t>(num_pins) * 2) slack_data.resize(static_cast<size_t>(num_pins) * 2);
 	float (*slack_array)[2] = reinterpret_cast<float(*)[2]>(slack_data.data());
-	heterosta_report_slacks_at_max(&sta, slack_array, false);
+	for (int d = 0; d < num_pins; ++d) {
+		int32_t g = (static_cast<size_t>(d) < TimingGangstaIO::d2g_.size()) ? TimingGangstaIO::d2g_[d] : -1;
+		if (g >= 0 && static_cast<size_t>(g) < num_g) {
+			slack_array[d][0] = slack_g[g * 2 + 0];
+			slack_array[d][1] = slack_g[g * 2 + 1];
+		} else {
+			slack_array[d][0] = slack_array[d][1] = std::numeric_limits<float>::max();
+		}
+	}
 
 	// Apply net weighting using momentum-based criticality update
 	if(!(wns < 0)) wns = 0;
@@ -273,53 +277,45 @@ void TimingGangstaCpp::update_net_weights(
 	CHECK_CONTIGUOUS(net_weight_deltas);
 	CHECK_CONTIGUOUS(degree_map);
 
-	if (use_cuda) {
-#ifdef CUDA_FOUND
-        DREAMPLACE_DISPATCH_FLOATING_TYPES(
-            net_criticality, "updateNetWeightCudaLauncher",
-            [&] {
-                updateNetWeightCudaLauncher<scalar_t>(
-                    &sta,
-                    num_nets,
-                    num_pins,
-                    DREAMPLACE_TENSOR_DATA_PTR(flat_netpin, int),
-                    DREAMPLACE_TENSOR_DATA_PTR(netpin_start, int),
-                    DREAMPLACE_TENSOR_DATA_PTR(pin2net_map, int),
-                    DREAMPLACE_TENSOR_DATA_PTR(net_criticality, scalar_t),
-                    DREAMPLACE_TENSOR_DATA_PTR(net_criticality_deltas, scalar_t),
-                    DREAMPLACE_TENSOR_DATA_PTR(net_weights, scalar_t),
-                    DREAMPLACE_TENSOR_DATA_PTR(net_weight_deltas, scalar_t),
-                    DREAMPLACE_TENSOR_DATA_PTR(degree_map, int),
-                    static_cast<scalar_t>(momentum_decay_factor),
-                    static_cast<scalar_t>(max_net_weight),
-                    ignore_net_degree);
-            });
-#else
-        dreamplacePrint(kERROR, "CUDA not available but use_cuda=true\n");
-#endif
-    } else {
+	// GangSTA is CPU-only and renumbers pins at build (seam C.4), so the net-weight update ALWAYS runs
+	// on the CPU launcher (which applies the gangsta->dreamplace slack permutation). use_cuda only
+	// governs where the criticality tensors live; we move them to CPU, update, and copy back.
+	(void) use_cuda;
+	auto fnp = flat_netpin.to(torch::kCPU).to(torch::kInt32).contiguous();
+	auto nps = netpin_start.to(torch::kCPU).to(torch::kInt32).contiguous();
+	auto p2n = pin2net_map.to(torch::kCPU).to(torch::kInt32).contiguous();
+	auto dgm = degree_map.to(torch::kCPU).to(torch::kInt32).contiguous();
+	auto nc  = net_criticality.to(torch::kCPU).contiguous();
+	auto ncd = net_criticality_deltas.to(torch::kCPU).contiguous();
+	auto nw  = net_weights.to(torch::kCPU).contiguous();
+	auto nwd = net_weight_deltas.to(torch::kCPU).contiguous();
+
 	DREAMPLACE_DISPATCH_FLOATING_TYPES(
-			net_criticality, "updateNetWeightCppLauncher",
+			nc, "updateNetWeightCppLauncher",
 			[&] {
 			updateNetWeightCppLauncher<scalar_t>(
 					sta,
 					num_nets,
 					num_pins,
-					DREAMPLACE_TENSOR_DATA_PTR(flat_netpin, int),
-					DREAMPLACE_TENSOR_DATA_PTR(netpin_start, int),
-					DREAMPLACE_TENSOR_DATA_PTR(pin2net_map, int),
-					DREAMPLACE_TENSOR_DATA_PTR(net_criticality, scalar_t),
-					DREAMPLACE_TENSOR_DATA_PTR(net_criticality_deltas, scalar_t),
-					DREAMPLACE_TENSOR_DATA_PTR(net_weights, scalar_t),
-					DREAMPLACE_TENSOR_DATA_PTR(net_weight_deltas, scalar_t),
-					DREAMPLACE_TENSOR_DATA_PTR(degree_map, int),
+					DREAMPLACE_TENSOR_DATA_PTR(fnp, int),
+					DREAMPLACE_TENSOR_DATA_PTR(nps, int),
+					DREAMPLACE_TENSOR_DATA_PTR(p2n, int),
+					DREAMPLACE_TENSOR_DATA_PTR(nc, scalar_t),
+					DREAMPLACE_TENSOR_DATA_PTR(ncd, scalar_t),
+					DREAMPLACE_TENSOR_DATA_PTR(nw, scalar_t),
+					DREAMPLACE_TENSOR_DATA_PTR(nwd, scalar_t),
+					DREAMPLACE_TENSOR_DATA_PTR(dgm, int),
 					static_cast<scalar_t>(momentum_decay_factor),
 					static_cast<scalar_t>(max_net_weight),
 					ignore_net_degree,
 					at::get_num_threads());
 			});
-	}
 
+	// Copy the updated criticality/weights back into the caller's (possibly GPU) tensors.
+	net_criticality.copy_(nc);
+	net_criticality_deltas.copy_(ncd);
+	net_weights.copy_(nw);
+	net_weight_deltas.copy_(nwd);
 }
 
 DREAMPLACE_END_NAMESPACE

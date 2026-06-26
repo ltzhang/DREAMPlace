@@ -2,14 +2,28 @@ set(OP_NAME timing_gangsta)
 
 set(TARGET_NAME ${OP_NAME})
 
-set(INCLUDE_DIRS 
+# ---- GangSTA external STA engine (open-source; static lib + embedded-Tcl SDC parser) ----
+# PROJECT_SOURCE_DIR is the DREAMPlace root, which lives at <gangsta>/placement/DREAMPlace; the gangsta
+# repo root is two levels up. `placement` is a symlink that points OUTSIDE the gangsta tree, so resolving
+# it would land on the wrong root — collapse ".." textually (ABSOLUTE, no symlink resolution) to stay at
+# <gangsta>. Override -DGANGSTA_ROOT=... if the repo lives elsewhere.
+get_filename_component(GANGSTA_ROOT_DEFAULT "${PROJECT_SOURCE_DIR}/../.." ABSOLUTE)
+set(GANGSTA_ROOT "${GANGSTA_ROOT_DEFAULT}" CACHE PATH "Path to the gangsta repo root (contains include/ and build/src/libgangsta.a)")
+find_library(GANGSTA_LIB NAMES gangsta HINTS "${GANGSTA_ROOT}/build/src" "${GANGSTA_ROOT}/build")
+find_library(GANGSTA_TCL_LIBRARY NAMES tcl8.6 tcl)  # gangsta's embedded-Tcl SDC parser dependency
+if(NOT (GANGSTA_LIB AND EXISTS "${GANGSTA_ROOT}/include/gangsta/gangsta.h" AND GANGSTA_TCL_LIBRARY))
+  message(FATAL_ERROR "timing_gangsta: GangSTA not found (lib=${GANGSTA_LIB} tcl=${GANGSTA_TCL_LIBRARY} root=${GANGSTA_ROOT}); build gangsta (cmake --build build) or pass -DGANGSTA_ROOT")
+endif()
+message(STATUS "timing_gangsta: GangSTA ENABLED (${GANGSTA_LIB}, tcl=${GANGSTA_TCL_LIBRARY})")
+
+set(INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/..
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${LIMBO_SOURCE_DIR}
   ${Boost_INCLUDE_DIRS}
   ${ZLIB_INCLUDE_DIRS}
   ${CUDA_INCLUDE_DIRS}
-  ${HETEROSTA_INCLUDE_DIR}
+  ${GANGSTA_ROOT}/include
   )
 
 set(LINK_LIBS utility_cxx
@@ -65,34 +79,17 @@ else()
 endif()
 
 
-# Derive the library directory from the first item in HETEROSTA_LIB list
-if(HETEROSTA_LIB)
-    list(GET HETEROSTA_LIB 0 _HETEROSTA_ANYLIB)
-    get_filename_component(_HETEROSTA_LIB_DIR "${_HETEROSTA_ANYLIB}" DIRECTORY)
-    if(EXISTS "${_HETEROSTA_LIB_DIR}")
-        message(STATUS "timing_gangsta: adding heterosta lib dir to linker search path: ${_HETEROSTA_LIB_DIR}")
-        # New CMake prefers target_link_directories over link_directories
-        if(COMMAND target_link_directories)
-            target_link_directories(${TARGET_NAME}_cpp PRIVATE "${_HETEROSTA_LIB_DIR}")
-        else()
-            link_directories("${_HETEROSTA_LIB_DIR}")
-        endif()
-    endif()
-endif()
-
-# Link by name to ensure DT_NEEDED == 'libheterosta.so'
-target_link_libraries(${TARGET_NAME}_cpp PRIVATE -lheterosta)
+# GangSTA is a PIC static archive (libgangsta.a) plus its embedded-Tcl SDC dependency. Static-link both
+# so the extension has no runtime .so dependency on gangsta.
+target_link_libraries(${TARGET_NAME}_cpp PRIVATE ${GANGSTA_LIB} ${GANGSTA_TCL_LIBRARY})
 
 set_target_properties(${TARGET_NAME}_cpp PROPERTIES
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
     BUILD_RPATH_USE_ORIGIN TRUE)
 
-install(FILES ${HETEROSTA_LIB}
-          DESTINATION dreamplace/ops/${OP_NAME})
-
-install(TARGETS 
-  ${TARGET_NAME}_cpp 
+install(TARGETS
+  ${TARGET_NAME}_cpp
   DESTINATION dreamplace/ops/${OP_NAME})
 
 file(GLOB INSTALL_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.py)

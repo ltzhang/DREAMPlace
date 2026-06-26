@@ -1,103 +1,74 @@
-# timing_gangsta — GangSTA timer backend for DREAMPlace (WIP scaffold)
+# timing_gangsta — GangSTA timer backend for DREAMPlace
 
 A third `timer_engine` (beside `opentimer` and `heterosta`) backed by the
-[GangSTA](../../../../) STA engine, for timing-driven placement and timer comparison. GangSTA's C
-API is a functional-parity clone of `heterosta.h`, so this op is a copy of `timing_heterosta/` with
-the HeteroSTA calls remapped to GangSTA.
+[GangSTA](../../../../) STA engine, for timing-driven placement and timer comparison. GangSTA's open
+C API is a functional-parity clone of `heterosta.h`, so this op mirrors `timing_heterosta/` with the
+HeteroSTA calls remapped to GangSTA (no license; GangSTA is open-source).
 
-> **STATUS: WIP scaffold — does NOT yet build or run.** It is intentionally *not* registered in
-> `dreamplace/ops/CMakeLists.txt`, so it cannot break the build. The mechanical renames are done; the
-> remaining seams below need finishing AND validation on a real timing design (ICCAD-2015), which is
-> not in the local corpus. Do not enable it until the seams are validated — several are wrong-by-
-> default for GangSTA and would silently produce incorrect timing.
+> **STATUS: delivered and validated on ICCAD-2015.** Builds (registered in `dreamplace/ops/CMakeLists.txt`),
+> imports, and runs the full timing-driven loop. Enable with `"timer_engine": "gangsta"` in the JSON
+> config (requires `timing_opt_flag: 1` and the Liberty/SDC inputs).
 
-## What GangSTA already provides (done + unit-tested in the gangsta repo)
+## Build
 
-The two HeteroSTA-only capabilities this op depends on are implemented and validated:
-- **In-memory netlist** — `gangsta_set_netlist_inmem(...)` (replaces `netlistdb_new` +
-  `heterosta_set_netlistdb`). Mirrors `NetlistDBCppInterface`. Byte-identical to a Verilog build
-  (`inmem_netlist_test`).
-- **RC from placement** — `gangsta_extract_rc_from_placement(...)` (same signature as HeteroSTA's;
-  CPU per-sink **star** model, a documented approximation of FLUTE/PDR). `extract_rc_test`.
-Plus the rest of the surface (`gangsta_read_liberty/sdc`, `build_graph`, `update_delay/arrivals`,
-`report_wns_tns`, `report_slacks`, `get_is_endpoint`, bulk `read_pin_timing`, `num_pins/pin_name`).
+The op statically links `libgangsta.a` (PIC) + its embedded-Tcl SDC dependency. CMake locates the
+gangsta repo from `<gangsta>/placement/DREAMPlace/../..`; override with `-DGANGSTA_ROOT=<path>` if the
+repo lives elsewhere. Build gangsta first (`cmake --build <gangsta>/build`), then build this op:
 
-## Remaining work to finish the op
-
-### A. Mechanical C-API signature fixes (determinable; just edit the call sites)
-
-| HeteroSTA call (still in this scaffold) | GangSTA replacement |
-|---|---|
-| `heterosta_set_delay_calculator_elmore(&sta)` | `gangsta_set_delay_calculator(&sta, GANGSTA_DELAY_ELMORE)` |
-| `heterosta_report_slacks_at_max(&sta, a, uc)` | `gangsta_report_slacks(&sta, GANGSTA_MAX, a, uc)` |
-| `heterosta_report_wns_tns_max(&sta, &w, &t, uc)` | `gangsta_report_wns_tns(&sta, GANGSTA_MAX, &w, &t, uc)` |
-| `heterosta_dump_paths_max_to_file(&sta, n, nw, p, uc)` | `gangsta_dump_paths_to_file(&sta, GANGSTA_MAX, n, nw, p, uc)` |
-| `heterosta_init_license(...)` | *delete* (GangSTA is open; no license) |
-| `heterosta_launch_debug_shell(...)` | *delete* (already commented) |
-| `netlistdb_new` / `heterosta_set_netlistdb` / `NetlistDB*` | *delete*; call `gangsta_set_netlist_inmem` (see B) |
-
-(`heterosta_new/free/init_logger/read_liberty/batch_read_liberty/read_sdc/read_spef/build_graph/
-zero_slew/flatten/get_is_endpoint/update_delay/update_arrivals/extract_rc_from_placement/reset/
-write_spef` were already renamed 1:1 by the scaffold.)
-
-### B. Netlist setup — `src/timing_gs_io_cpp.cpp`
-
-Replace the `NetlistDB` build in `buildTimerDB()` with, after `gangsta_read_liberty`:
-```c
-gangsta_set_delay_calculator(&sta, GANGSTA_DELAY_ELMORE);
-gangsta_set_netlist_inmem(&sta, g_netlist_data.design_name.c_str(),
-    num_cells, cell_name_ptrs, cell_type_ptrs,
-    num_pins, pin_name_ptrs, pin_directions, pin2cell_map, pin2net_map,
-    num_nets, net_name_ptrs);
-gangsta_build_graph(&sta);
+```bash
+cd <gangsta>/placement/DREAMPlace/build
+cmake . -DGANGSTA_ROOT=<gangsta>
+cmake --build . --target timing_gangsta_cpp -j   # then `make install` (or copy the .so + *.py)
 ```
-`build_netlistdb_from_dreamplace` keeps populating `g_netlist_data` but returns `bool` (no
-`NetlistDB*`).
 
-### C. ⚠️ Semantic seams — wrong-by-default for GangSTA; MUST validate on real data
+## What was implemented (vs the HeteroSTA scaffold)
 
-1. **Cell indexing.** HeteroSTA reserves cell 0 as a top-module sentinel and uses `pin2cell =
-   node_id + 1` (`setup_cell_data` pushes an empty cell 0 = designName; `setup_pin_data` line ~535).
-   GangSTA wants **0-based real cells** (no sentinel): `totalcells = numMovable + numFixed`, drop the
-   sentinel push, `pin2cell = node_id`. A `celltype` of the design name is not a library cell and
-   would make `build()` fail.
-2. **Pin-name separator.** `setup_pin_data` does `std::replace(name, ':', '/')` for instance pins.
-   GangSTA detects ports by the **absence of `:`** and parses the library pin name **after `:`** —
-   so KEEP the `:` (remove the replace), else every instance pin is misread as a top port.
-3. **Top-port direction.** GangSTA's `pindirection` is standard-cell-oriented: a top **input** port
-   must be marked as an **output pin (1)**, a top output as input (0). Verify whether DREAMPlace's
-   `pin_direct` is already inverted for top ports; if not, invert it for port pins here.
-4. **Pin permutation.** HeteroSTA preserves DREAMPlace's pin order; GangSTA's `build_netlist`
-   **renumbers** pins. After `build_graph`, build maps by name:
-   `g2d[g] = dreamplace_id_of(gangsta_pin_name(g))`, `d2g[d] = gangsta_lookup_pin(pinname[d])`.
-   In `timing_gs_cpp.cpp`: reorder coords DREAMPlace→GangSTA before `gangsta_extract_rc_from_placement`
-   (`xs_g[g] = x[g2d[g]]`), and remap slacks GangSTA→DREAMPlace after `gangsta_report_slacks`
-   (`slack_d[d] = slack_g[d2g[d]]`) so the net-weight loop indexes correctly.
-5. **RC units.** The op's `unit_cap_xy`/`unit_res_xy` are tuned for HeteroSTA's Rust canonical units
-   (`res_unit=1e3`, `cap_unit=1e-15`). GangSTA's star RC expects ff/kohm; confirm the scale so
-   absolute delays are meaningful (load *ratios* are fine regardless).
+- **Open C API remap (no NetlistDB, no license):** `gangsta_set_netlist_inmem` replaces
+  `netlistdb_new`/`heterosta_set_netlistdb`; `gangsta_set_delay_calculator(.,GANGSTA_DELAY_ELMORE)`,
+  `gangsta_report_slacks(.,GANGSTA_MAX,.)`, `gangsta_report_wns_tns(.,GANGSTA_MAX,.)` replace the
+  `*_at_max`/`*_max` HeteroSTA calls; `heterosta_init_license` deleted.
+- **Semantic seams (validated on `superblue4`):**
+  1. **0-based cells** — `totalcells = numMovable + numFixed`, no top-module sentinel; `pin2cell = node_id`.
+  2. **Keep the `:` pin separator** — GangSTA detects top ports by the *absence* of `:` and reads the
+     library pin name *after* `:`. (Confirmed: the pin permutation below matches 100% by name.)
+  3. **Port direction passthrough** — GangSTA wants a top input as an output pin (1) and a top output
+     as input (0); DREAMPlace/place_io *already* stores ports with this convention, so it is passed
+     through, **not** inverted. (Inverting made output ports false drivers → "net has multiple drivers".)
+  4. **Pin permutation** — GangSTA renumbers pins at build, so after `build_graph` the op builds
+     `g2d`/`d2g` maps by name (`gangsta_pin_name` ↔ DREAMPlace pin name), reorders coords
+     DREAMPlace→GangSTA before `extract_rc_from_placement`, and remaps slacks GangSTA→DREAMPlace.
+  5. **RC units** — the per-micron R/C are scaled to ff/kΩ per DEF-unit (GangSTA's `extract_rc` units),
+     identical to HeteroSTA's canonical scaling.
+- **Black-box hard macros** — GangSTA now black-boxes a `cell_type` absent from Liberty (LEF blocks
+  like `block_9x9_0`); the op feeds per-pin directions so the build succeeds. (gangsta-side change,
+  `black_box_test`.)
+- **CPU routing** — GangSTA is CPU-only, so `forward`/`update_net_weights` move coords/tensors to CPU,
+  run on the CPU launcher, and copy results back; the CUDA kernel is retained for ABI parity but unused.
+- **Dispatch** — `Timer.py` (engine allowlist + lazy import), `BasicPlace.py` (shares the HeteroSTA
+  `TimingOpt` via module alias), `NonLinearPlace.py` (gangsta grouped with heterosta at the 3 branches).
 
-### D. Build — `CMakeLists.txt`
+## Validation (ICCAD-2015 `superblue4`)
 
-Replace the `-lheterosta` link + `HETEROSTA_*` vars with the GangSTA static lib (as the Xplace
-integration does): find `libgangsta.a` under `<gangsta>/build/src`, add `<gangsta>/include`, and link
-`${GANGSTA_LIB} ${TCL_LIBRARY}` (GangSTA needs `libtcl8.6`). Then add
-`add_subdirectory(timing_gangsta)` to `dreamplace/ops/CMakeLists.txt`.
+Full timing-driven run with `"timer_engine":"gangsta"` (CPU; the box's GPU dropped off the bus mid-session):
 
-### E. Dispatch
+- Netlist assembled in-memory: **795645 cells, 2497940 pins (6623 top ports), 802513 nets**;
+  `build_graph` succeeds (black-boxing the LEF macros).
+- **Pin permutation: 2497940/2497940 mapped, 0 unmatched** — confirms seams C.1–C.3 are correct
+  (every gangsta pin name equals its DREAMPlace pin name).
+- Per timing step: `extract_rc_from_placement` (2.50M pins) → `update_delay`/`update_arrivals` →
+  `report` in ~1.2 s; net-weight update ~0.45 s.
+- **WNS improves over the loop**: −43.96 → −26.6 ns across 5 timing steps as criticality-driven
+  net-weighting tightens timing — the expected timing-driven-placement behavior.
 
-- `dreamplace/Timer.py`: add `"gangsta"` to the allowed engines (line ~25) and an import branch
-  (lines ~38-46) importing `dreamplace.ops.timing_gangsta.timing_gs` +
-  `...timing_gangsta_cpp`.
-- `dreamplace/ops/timing_gangsta/timing_gs.py`: the scaffold already renamed the module imports;
-  verify against the finished `timing_gangsta_cpp` symbol names.
-- `dreamplace/BasicPlace.py` / `dreamplace/NonLinearPlace.py`: add `gangsta` alongside the
-  `heterosta` branches (same `TimingOpt` wiring).
-- `params.json`: document `gangsta` as a valid `timer_engine`.
+The numbers are pessimistic in absolute terms (early in placement; star RC is approximate;
+`set_driving_cell` is not modeled) but finite, sane, and trending correctly.
 
-### F. Validation (blocked on data)
+## Not yet done
 
-No ICCAD-2015 design is present locally (`benchmarks/` has only LEF/DEF ispd sets without
-`*_Early/_Late.lib` + `.sdc`). Finishing C-E without a timing design to run means the semantic seams
-(C) cannot be verified — so the op stays unregistered until an ICCAD-2015 design is available and a
-`timer_engine=gangsta` run can be compared against `heterosta`/`opentimer`.
+- **Head-to-head vs `heterosta`/`opentimer` on the same design** — blocked on the HeteroSTA/OpenTimer
+  benchmark packages (`benchmarks/iccad2015.hs` / `.ot`, with `.hs.sdc`/`.ot.sdc`), which are separate
+  Google-Drive downloads not present locally. The gangsta op was validated against the standalone
+  gangsta engine (self-consistent) instead.
+- **GPU timing** — GangSTA's GPU path is correct-but-slow and the op routes everything to CPU.
+- **`gangsta_dump_paths_to_file`** — declared in `gangsta.h` but not yet implemented in the C API, so
+  the path-dump binding is omitted (the timing-driven flow does not need it).

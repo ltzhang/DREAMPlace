@@ -469,7 +469,7 @@ class NonLinearPlace(BasicPlace.BasicPlace):
                         # instance variable, so it only takes one argument.
                         # HeteroSTA can use GPU tensors directly, OpenTimer needs CPU
                         timing_beg = time.time()
-                        if params.timer_engine == "heterosta":
+                        if params.timer_engine in ("heterosta", "gangsta"):
                             timing_op(self.pos[0].data.clone())
                         else:
                             timing_op(self.pos[0].data.clone().cpu())
@@ -488,7 +488,7 @@ class NonLinearPlace(BasicPlace.BasicPlace):
                         # For HeteroSTA, net_weights are modified in-place on GPU - no copy needed
                         # For OpenTimer, we still need to copy from placedb to device
 
-                        if params.timer_engine != "heterosta" and self.device != torch.device("cpu"):
+                        if params.timer_engine not in ("heterosta", "gangsta") and self.device != torch.device("cpu"):
                             self.data_collections.net_weights.copy_(
                                 torch.from_numpy(placedb.net_weights))
                         logging.info("net-weight update step %.3f ms" % \
@@ -889,7 +889,7 @@ class NonLinearPlace(BasicPlace.BasicPlace):
                 logging.info("additional sta after legalization")
                 timing_op = self.op_collections.timing_op
      
-                if params.timer_engine == "heterosta":
+                if params.timer_engine in ("heterosta", "gangsta"):
                     timing_op(self.pos[0].data.clone())
                     cur_metric.wns, cur_metric.tns = timing_op.report_wns_tns()
                     cur_metric.tns /= (time_unit * 1e17)

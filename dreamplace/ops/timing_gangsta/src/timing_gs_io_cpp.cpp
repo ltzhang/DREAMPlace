@@ -12,8 +12,12 @@
 
 DREAMPLACE_BEGIN_NAMESPACE
 
-// Global storage for NetlistDB data 
+// Global storage for NetlistDB data
 TimingGangstaIO::NetlistDataStorage TimingGangstaIO::g_netlist_data;
+
+// Pin permutation maps (seam C.4).
+std::vector<int32_t> TimingGangstaIO::g2d_;
+std::vector<int32_t> TimingGangstaIO::d2g_;
 
 // Callback function for GangSTA logging integration
 void dreamplace_gangsta_print_callback(uint8_t level, const char* message) {
@@ -92,12 +96,12 @@ std::string join_lib_paths(const std::vector<std::string>& paths) {
 	return oss.str();
 }
 
-bool read_liberty_group(GangstaTimer& sta, TimerEarlyOrLate el, const std::vector<std::string>& lib_paths) {
+bool read_liberty_group(GangstaTimer& sta, GangstaEarlyLate el, const std::vector<std::string>& lib_paths) {
 	if (lib_paths.empty()) {
 		return true;
 	}
 
-	const char* corner_name = (el == EARLY) ? "early" : "late";
+	const char* corner_name = (el == GANGSTA_EARLY) ? "early" : "late";
 	if (lib_paths.size() == 1) {
 		const std::string& lib_path = lib_paths.front();
 		if (!gangsta_read_liberty(&sta, el, lib_path.c_str())) {
@@ -141,16 +145,16 @@ bool TimingGangstaIO::read_liberty_libraries_with_paths(GangstaTimer& sta,
 		const std::vector<std::string>& shared_lib_paths) {
 	// Shared library files for both early and late
 	if (!shared_lib_paths.empty()) {
-		return read_liberty_group(sta, EARLY, shared_lib_paths) &&
-				read_liberty_group(sta, LATE, shared_lib_paths);
+		return read_liberty_group(sta, GANGSTA_EARLY, shared_lib_paths) &&
+				read_liberty_group(sta, GANGSTA_LATE, shared_lib_paths);
 	}
 
 	// Separate early/late library files
 	bool success = true;
 	bool has_any_lib = !early_lib_paths.empty() || !late_lib_paths.empty();
 
-	success = read_liberty_group(sta, EARLY, early_lib_paths) && success;
-	success = read_liberty_group(sta, LATE, late_lib_paths) && success;
+	success = read_liberty_group(sta, GANGSTA_EARLY, early_lib_paths) && success;
+	success = read_liberty_group(sta, GANGSTA_LATE, late_lib_paths) && success;
 
 	if (!has_any_lib) {
 		dreamplacePrint(kERROR, "No Liberty library specified\n");
@@ -205,18 +209,22 @@ bool TimingGangstaIO::setupTiming(GangstaTimer& sta, PlaceDB& placedb, int argc,
 		return false;
 	}
 
-	// Build NetlistDB from DREAMPlace mappings instead of rebuilding from PlaceDB
-	dreamplacePrint(kINFO, "Using DREAMPlace mappings to build NetlistDB for data consistency\n");
-	NetlistDB* netlistdb = build_netlistdb_from_dreamplace(placedb, dreamplace_mappings);
-	if (!netlistdb) {
-		dreamplacePrint(kERROR, "Failed to create NetlistDB from DREAMPlace mappings\n");
+	// Populate g_netlist_data from DREAMPlace mappings (GangSTA in-memory netlist; no NetlistDB).
+	dreamplacePrint(kINFO, "Using DREAMPlace mappings to build the GangSTA in-memory netlist\n");
+	if (!build_netlistdb_from_dreamplace(placedb, dreamplace_mappings)) {
+		dreamplacePrint(kERROR, "Failed to assemble GangSTA netlist arrays from DREAMPlace mappings\n");
 		return false;
 	}
 
-	// Setup timer database 
-	if (!buildTimerDB(sta, netlistdb)) {
+	// Setup timer database
+	if (!buildTimerDB(sta)) {
 		dreamplacePrint(kERROR, "Failed to build timer database\n");
 		return false;
+	}
+
+	// Seam C.4: build the GangSTA<->DREAMPlace pin permutation now that the graph is built.
+	if (!build_pin_maps(sta)) {
+		dreamplacePrint(kWARN, "Some DREAMPlace pins did not map to GangSTA pins; timing may be partial\n");
 	}
 
 	// Read SDC constraints with enhanced error handling
@@ -228,9 +236,9 @@ bool TimingGangstaIO::setupTiming(GangstaTimer& sta, PlaceDB& placedb, int argc,
 
 	return true;
 }
-NetlistDB* TimingGangstaIO::build_netlistdb_from_dreamplace(PlaceDB& placedb, 
+bool TimingGangstaIO::build_netlistdb_from_dreamplace(PlaceDB& placedb,
 		const pybind11::dict& dreamplace_mappings) {
-	dreamplacePrint(kINFO, "Building NetlistDB from DREAMPlace mappings for data consistency\n");
+	dreamplacePrint(kINFO, "Assembling GangSTA in-memory netlist arrays from DREAMPlace mappings\n");
 
 	// Clear previous data
 	g_netlist_data.clear();
@@ -267,122 +275,95 @@ NetlistDB* TimingGangstaIO::build_netlistdb_from_dreamplace(PlaceDB& placedb,
 		if (!analyze_placedb_structure(placedb, numMovable, numFixed, numPlaceBlockages, 
 					iopinNodeStart, num_terminal_NIs, num_pins)) {
 			dreamplacePrint(kERROR, "Failed to analyze PlaceDB structure\n");
-			return nullptr;
+			return false;
 		}
 
-		// Setup cell data: Cell 0 = top module
-		size_t totalcells = 1 + numMovable + numFixed;
+		// Seam C.1: GangSTA uses 0-based REAL cells (no top-module sentinel at index 0). totalcells is
+		// exactly the movable+fixed node count; pin2cell = node_id (no +1). A celltype of the design
+		// name is not a library cell and would make build() fail.
+		size_t totalcells = numMovable + numFixed;
 		std::string real_design_name = placedb.designName();
 		g_netlist_data.design_name = real_design_name;
 
 		if (!setup_cell_data(placedb, totalcells, real_design_name)) {
 			dreamplacePrint(kERROR, "Failed to setup cell data\n");
-			return nullptr;
+			return false;
 		}
 
 		// Setup pin data using DREAMPlace mappings
 		if (!setup_pin_data(placedb, iopinNodeStart, pin2node_data, pin2net_data, pin_direct_data, num_pins)) {
 			dreamplacePrint(kERROR, "Failed to setup pin data using DREAMPlace mappings\n");
-			return nullptr;
+			return false;
 		}
 
 		// Setup net data
 		if (!setup_net_data(placedb)) {
 			dreamplacePrint(kERROR, "Failed to setup net data\n");
-			return nullptr;
+			return false;
 		}
 
-		// Create interface arrays
+		// Create the borrowed const char* pointer arrays GangSTA's C API consumes
 		if (!create_interface_arrays()) {
 			dreamplacePrint(kERROR, "Failed to create interface arrays\n");
-			return nullptr;
+			return false;
 		}
 
-
-		// Create NetlistDB interface
-		NetlistDBCppInterface interface;
-		interface.top_design_name = g_netlist_data.design_name.c_str();
-		interface.num_cells = totalcells;
-		interface.num_pins = g_netlist_data.pin_names.size();
-		interface.num_ports = 0; // Will be calculated below
-		interface.num_nets = g_netlist_data.net_names.size();
-		interface.num_nets_zero = g_netlist_data.nets_zero.size();
-		interface.num_nets_one = g_netlist_data.nets_one.size();
-
-		interface.cellname_array = g_netlist_data.cell_name_ptrs.data();
-		interface.celltype_array = g_netlist_data.cell_type_ptrs.data();
-		interface.pinname_array = g_netlist_data.pin_name_ptrs.data();
-		interface.netname_array = g_netlist_data.net_name_ptrs.data();
-		interface.pindirection_array = g_netlist_data.pin_directions.data();
-		interface.pin2cell_array = g_netlist_data.pin2cell_map.data();
-		interface.pin2net_array = g_netlist_data.pin2net_map.data();
-		interface.nets_zero_array = g_netlist_data.nets_zero.data();
-		interface.nets_one_array = g_netlist_data.nets_one.data();
-
-		// Calculate number of top-level ports
-		for (size_t i = 0; i < g_netlist_data.pin2cell_map.size(); ++i) {
-			if (g_netlist_data.pin2cell_map[i] == 0) {
-				interface.num_ports++;
-			}
+		// GangSTA classifies a pin as a top port by the ABSENCE of ':' in its name (seam C.2).
+		size_t num_ports = 0;
+		for (const auto& pn : g_netlist_data.pin_names) {
+			if (pn.find(':') == std::string::npos) ++num_ports;
 		}
 
-		NetlistDB* netlistdb = netlistdb_new(&interface);
+		dreamplacePrint(kINFO, "GangSTA netlist arrays assembled: %zu cells, %zu pins (%zu top ports), %zu nets\n",
+				totalcells, g_netlist_data.pin_names.size(), num_ports, g_netlist_data.net_names.size());
 
-		if (!netlistdb) {
-			dreamplacePrint(kERROR, "Failed to create NetlistDB\n");
-			return nullptr;
-		}
-
-		dreamplacePrint(kINFO, "NetlistDB created successfully with %zu cells, %zu pins, %zu nets\n",
-				totalcells, g_netlist_data.pin_names.size(), g_netlist_data.net_names.size());
-		dreamplacePrint(kINFO, "Using DREAMPlace mappings ensures data consistency with placement engine\n");
-
-		return netlistdb;
+		return true;
 
 	} catch (const std::exception& e) {
 		dreamplacePrint(kERROR, "Failed to extract DREAMPlace mappings: %s\n", e.what());
-		return nullptr;
+		return false;
 	}
 }
 /// @brief Build the timing database for GangSTA
 /// @param sta The STA holdings object
 /// @param netlistdb The NetlistDB object
 /// @return True on success, false on failure
-bool TimingGangstaIO::buildTimerDB(GangstaTimer& sta, NetlistDB* netlistdb) {
-	if (!netlistdb) {
-		dreamplacePrint(kERROR, "NetlistDB is null\n");
+bool TimingGangstaIO::buildTimerDB(GangstaTimer& sta) {
+	const size_t num_cells = g_netlist_data.cell_names.size();
+	const size_t num_pins  = g_netlist_data.pin_names.size();
+	const size_t num_nets  = g_netlist_data.net_names.size();
+	if (num_pins == 0 || num_cells == 0) {
+		dreamplacePrint(kERROR, "Empty netlist (cells=%zu, pins=%zu)\n", num_cells, num_pins);
 		return false;
 	}
 
-	dreamplacePrint(kINFO, "This is where the flat_parasitics panic may occur...\n");
+	// Step 1: Elmore delay calculator (matches the HeteroSTA op's elmore default).
+	gangsta_set_delay_calculator(&sta, GANGSTA_DELAY_ELMORE);
 
-	// Step 1: Set NetlistDB in GangSTA
-	heterosta_set_netlistdb(&sta, netlistdb);
+	// Step 2: Ingest the in-memory netlist (replaces NetlistDB + heterosta_set_netlistdb). The pointer
+	// arrays were materialized by create_interface_arrays() and stay alive in g_netlist_data.
+	if (!gangsta_set_netlist_inmem(&sta, g_netlist_data.design_name.c_str(),
+			num_cells, g_netlist_data.cell_name_ptrs.data(), g_netlist_data.cell_type_ptrs.data(),
+			num_pins, g_netlist_data.pin_name_ptrs.data(), g_netlist_data.pin_directions.data(),
+			g_netlist_data.pin2cell_map.data(), g_netlist_data.pin2net_map.data(),
+			num_nets, g_netlist_data.net_name_ptrs.data())) {
+		dreamplacePrint(kERROR, "gangsta_set_netlist_inmem failed: %s\n", gangsta_last_error(&sta));
+		return false;
+	}
 
-	// Step 2: Flatten all hierarchical designs
+	// Step 3: Flatten + build the timing graph.
 	gangsta_flatten(&sta);
-
-	// Step 3: Set delay calculator
-	//heterosta_set_delay_calculator_elmore_scaled(&sta);
-	heterosta_set_delay_calculator_elmore(&sta);
-
-	// Step 4: Build timing graph
 	gangsta_build_graph(&sta);
+	if (!gangsta_is_built(&sta)) {
+		dreamplacePrint(kERROR, "gangsta_build_graph failed: %s\n", gangsta_last_error(&sta));
+		return false;
+	}
 
-	// Step 5: Initialize slew values
+	// Step 4: Initialize slew values.
 	gangsta_zero_slew(&sta);
 
-	// Initialize pin mapping
-	size_t num_pins = g_netlist_data.pin_names.size();
-	dreamplacePrint(kINFO, " Pin count: %zu\n", num_pins);
-
-	// Step 6: Initialize and identify timing endpoints
-	static_assert(sizeof(bool) == 1);
-	std::vector<uint8_t> timingpin_is_endpoint;
-	timingpin_is_endpoint.resize(num_pins);
-	gangsta_get_is_endpoint(&sta, (bool *) timingpin_is_endpoint.data());
-
-	dreamplacePrint(kINFO, "Timer database built successfully\n");
+	dreamplacePrint(kINFO, "Timer database built successfully: %zu cells, %zu pins, %zu nets; gangsta pins=%zu\n",
+			num_cells, num_pins, num_nets, gangsta_num_pins(&sta));
 	return true;
 }
 /// @brief analyze PlaceDB structure to identify IO pin starting index
@@ -426,26 +407,23 @@ bool TimingGangstaIO::analyze_placedb_structure(PlaceDB& placedb, size_t& numMov
 /// @return True on success, false on failure
 
 bool TimingGangstaIO::setup_cell_data(PlaceDB& placedb, size_t totalcells, const std::string& designName) {
-	dreamplacePrint(kINFO, "Setting up cell data with correct GangSTA indexing...\n");
+	dreamplacePrint(kINFO, "Setting up cell data with GangSTA 0-based indexing (no top-module sentinel)...\n");
+	(void) designName;  // GangSTA has no sentinel cell; the design name is passed to set_netlist_inmem.
 
 	g_netlist_data.cell_names.reserve(totalcells);
 	g_netlist_data.cell_types.reserve(totalcells);
 
-	// Cell 0: Top module 
-	g_netlist_data.cell_names.push_back(""); // Cell 0 name is empty 
-	g_netlist_data.cell_types.push_back(designName); // Cell 0 type is design name
-
-	// Cells 1 to N: DREAMPlace nodes (with +1 offset)
+	// Seam C.1: cells are the REAL movable+fixed nodes, 0-based (no empty cell 0 = design name). A
+	// celltype of the design name is not a library cell and would make GangSTA's build() fail.
 	for (size_t i = 0; i < totalcells; ++i) {
-		const auto& node = placedb.nodes()[i];
 		const auto& node_property = placedb.nodeProperty(i);
 
 		// Cell name: use node name or generate one
-		std::string cell_name = node_property.name().empty() ? 
+		std::string cell_name = node_property.name().empty() ?
 			("cell_" + std::to_string(i)) : node_property.name();
 		g_netlist_data.cell_names.push_back(cell_name);
 
-		// Cell type: get macro name
+		// Cell type: get macro (library cell) name
 		std::string cell_type = "UNKNOWN";
 		if (node_property.macroId() < placedb.macros().size()) {
 			cell_type = placedb.macros()[node_property.macroId()].name();
@@ -453,7 +431,7 @@ bool TimingGangstaIO::setup_cell_data(PlaceDB& placedb, size_t totalcells, const
 		g_netlist_data.cell_types.push_back(cell_type);
 	}
 
-	dreamplacePrint(kINFO, "Cell data setup complete: %zu cells (including top module)\n", totalcells);
+	dreamplacePrint(kINFO, "Cell data setup complete: %zu cells (0-based real cells)\n", totalcells);
 	return true;
 }
 
@@ -502,46 +480,44 @@ bool TimingGangstaIO::setup_pin_data(PlaceDB& placedb, size_t iopinNodeStart,
 				static_cast<size_t>(dreamplace_node_id) >= iopinNodeStart &&
 				static_cast<size_t>(dreamplace_node_id) < nodes.size());
 
+		uint8_t direction;
+		size_t gangsta_cell_id;
+
 		if (is_io_pin && pin.name().length() > 0) {
+			// Top-level port: GangSTA detects it by the ABSENCE of ':' in the name (seam C.2). A port
+			// name must therefore be bare (no ':'); pin2cell is IGNORED for ports.
 			pin_name = pin.name();
 			valid_port_count++;
-			//dreamplacePrint(kDEBUG, "Top-level port detected: pin_idx=%zu, name=%s\n",    
-			//              pin_idx, pin_name.c_str());
+			// Seam C.3: GangSTA wants a top INPUT port as an OUTPUT pin (1, it DRIVES the netlist) and a
+			// top OUTPUT port as an input pin (0, a SINK). DREAMPlace/place_io ALREADY stores top ports
+			// with this same inverted convention (an output port's pin_direct is 'INPUT'=0, an input
+			// port's is 'OUTPUT'=1), so pass it through directly — NO extra inversion. (Validated on
+			// superblue4: inverting here turned output ports into false drivers -> "net has multiple
+			// drivers" at build_graph.)
+			direction = dreamplace_pin_direct;
+			gangsta_cell_id = 0;  // ignored for ports
 		} else {
-			// This is an instance pin - change ':' to '/'
+			// Instance pin: KEEP the ':' separator (seam C.2). GangSTA reads the library pin name AFTER
+			// ':' and uses pin2cell for the owning instance; direction comes from Liberty (ignored here).
 			pin_name = pin.name();
-			std::replace(pin_name.begin(), pin_name.end(), ':', '/');
-			//dreamplacePrint(kDEBUG, "Instance pin detected: pin_idx=%zu, name=%s\n",    
-			//              pin_idx, pin_name.c_str());
 			instance_pin_count++;
+			direction = dreamplace_pin_direct;  // ignored for cell pins, but carry it through
+			// Seam C.1: pin2cell = node_id (0-based, NO +1 sentinel offset).
+			if (dreamplace_node_id >= 0 && dreamplace_node_id < static_cast<int32_t>(nodes.size())) {
+				gangsta_cell_id = static_cast<size_t>(dreamplace_node_id);
+			} else {
+				dreamplacePrint(kWARN, "Invalid node ID %d for pin %zu, using cell ID 0\n", dreamplace_node_id, pin_idx);
+				gangsta_cell_id = 0;
+			}
 		}
-
-		// Pin direction - use DREAMPlace data directly
-		// DREAMPlace pin_direct encoding: 0=INPUT, 1=OUTPUT, 2=INOUT
-		// GangSTA encoding: 0=INPUT, 1=OUTPUT, 2=INOUT (same as DREAMPlace)
-		uint8_t direction = dreamplace_pin_direct;
 
 		g_netlist_data.pin_names.push_back(pin_name);
 		g_netlist_data.pin_directions.push_back(direction);
-
-		// Convert DREAMPlace node ID to GangSTA cell ID
-		size_t heterosta_cell_id;
-		if (dreamplace_node_id >= 0 && dreamplace_node_id < static_cast<int32_t>(nodes.size())) {
-			// Check if this is an IO pin that should map to top module cell 0
-			size_t node_id = static_cast<size_t>(dreamplace_node_id);
-			if (node_id >= iopinNodeStart && pin.name().length() > 0) {
-				heterosta_cell_id = 0; // Top module
-			} else {
-				heterosta_cell_id = dreamplace_node_id + 1; // +1 offset for GangSTA
-			}
-		} else {
-			dreamplacePrint(kWARN, "Invalid node ID %d for pin %zu, using cell ID 0\n", dreamplace_node_id, pin_idx);
-			heterosta_cell_id = 0;
-		}
-
-		g_netlist_data.pin2cell_map.push_back(heterosta_cell_id);
+		g_netlist_data.pin2cell_map.push_back(gangsta_cell_id);
 		g_netlist_data.pin2net_map.push_back(static_cast<size_t>(dreamplace_net_id));
 	}
+	dreamplacePrint(kINFO, "Pin data setup complete: %zu ports, %zu instance pins\n",
+			valid_port_count, instance_pin_count);
 	return true;
 }
 
@@ -597,40 +573,17 @@ bool TimingGangstaIO::create_interface_arrays() {
 	return true;
 }
 
-// A hardcoded fallback license..
-const char* hardcode_lic = nullptr;
-
-/// @brief initialize GangSTA instance with logging callback
+/// @brief initialize GangSTA instance with logging callback. GangSTA is open-source — no license.
 TimingGangstaIO::GangstaTimerPtr TimingGangstaIO::initialize_heterosta() {
-
-	dreamplacePrint(kINFO, "GangSTA instance created successfully\n");
 	gangsta_init_logger(dreamplace_gangsta_print_callback);
-    const char* lic = std::getenv("GangSTA_Lic");
-    bool have_env = (lic != nullptr) && (lic[0] != '\0');
-    if (have_env) {
-        dreamplacePrint(kINFO, "Successfully loaded license from 'GangSTA_Lic' environment variable.\n");
-    } else if (hardcode_lic != nullptr && hardcode_lic[0] != '\0') {
-        lic = hardcode_lic;
-        dreamplacePrint(kWARN, "'GangSTA_Lic' environment variable not found. Using hardcoded license.\n");
-    } else {
-        dreamplacePrint(kERROR, "License not found.\n");
-        dreamplacePrint(kERROR, "Neither 'GangSTA_Lic' environment variable nor hardcoded license is provided.\n");
-        dreamplacePrint(kINFO,  "Please set one of the following before running, e.g.:\n");
-        dreamplacePrint(kINFO,  "  - export GangSTA_Lic=\"<your-license-string>\"\n");
-        dreamplacePrint(kINFO,  "  - or set 'hardcode_lic' in timing_gs_io_cpp.cpp to your license string.\n");
-        std::exit(EXIT_FAILURE);
-    }
-
-	heterosta_init_license(lic);
 
 	auto sta = GangstaTimerPtr(gangsta_new(), gangsta_free);
 	if (!sta) {
 		dreamplacePrint(kERROR, "Failed to create GangSTA instance\n");
 		return GangstaTimerPtr(nullptr, gangsta_free);
 	}
-	
-	dreamplacePrint(kINFO, "GangSTA initialization completed\n");
 
+	dreamplacePrint(kINFO, "GangSTA initialization completed\n");
 	return sta;
 }
 
@@ -646,6 +599,39 @@ const char* TimingGangstaIO::getPinName(size_t pin_index) {
 
 size_t TimingGangstaIO::getPinCount() {
 	return g_netlist_data.pin_names.size();
+}
+
+/// @brief Build the GangSTA<->DREAMPlace pin permutation by name (seam C.4).
+bool TimingGangstaIO::build_pin_maps(GangstaTimer& sta) {
+	const size_t num_d = g_netlist_data.pin_names.size();
+	const size_t num_g = gangsta_num_pins(&sta);
+
+	// name -> dreamplace pin id (DREAMPlace pin order is g_netlist_data.pin_names insertion order).
+	std::unordered_map<std::string, int32_t> name2d;
+	name2d.reserve(num_d * 2);
+	for (size_t d = 0; d < num_d; ++d) name2d.emplace(g_netlist_data.pin_names[d], static_cast<int32_t>(d));
+
+	g2d_.assign(num_g, -1);
+	d2g_.assign(num_d, -1);
+
+	size_t mapped = 0, unmatched_g = 0;
+	for (size_t g = 0; g < num_g; ++g) {
+		const char* gn = gangsta_pin_name(&sta, g);
+		if (!gn || gn[0] == '\0') { ++unmatched_g; continue; }
+		auto it = name2d.find(gn);
+		if (it == name2d.end()) { ++unmatched_g; continue; }
+		const int32_t d = it->second;
+		g2d_[g] = d;
+		if (d2g_[d] < 0) { d2g_[d] = static_cast<int32_t>(g); ++mapped; }
+	}
+
+	size_t unmatched_d = 0;
+	for (size_t d = 0; d < num_d; ++d) if (d2g_[d] < 0) ++unmatched_d;
+
+	dreamplacePrint(kINFO, "Pin permutation built: dreamplace=%zu gangsta=%zu mapped=%zu "
+			"(unmatched dreamplace=%zu, unmatched gangsta=%zu)\n",
+			num_d, num_g, mapped, unmatched_d, unmatched_g);
+	return unmatched_d == 0;
 }
 
 DREAMPLACE_END_NAMESPACE

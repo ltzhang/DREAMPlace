@@ -22,9 +22,9 @@ class Timer(object):
         self.timer_engine = timer_engine.lower()
 
         # Validate engine selection
-        if self.timer_engine not in ["opentimer","heterosta"]:
-            raise ValueError(f"Unsupported timer engine:{timer_engine}.Must be 'opentimer' or 'heterosta'")
-        
+        if self.timer_engine not in ["opentimer","heterosta","gangsta"]:
+            raise ValueError(f"Unsupported timer engine:{timer_engine}.Must be 'opentimer', 'heterosta' or 'gangsta'")
+
         # Lazy import based on engine selection
         if self.timer_engine == "opentimer":
             try:
@@ -35,6 +35,15 @@ class Timer(object):
                 logging.info("Using OpenTimer timing analysis engine")
             except ImportError as e:
                 raise ImportError(f"Failed to import OpenTimer modules: {e}")
+        elif self.timer_engine == "gangsta":
+            try:
+                import dreamplace.ops.timing_gangsta.timing_gs as timing
+                import dreamplace.ops.timing_gangsta.timing_gangsta_cpp as timing_cpp
+                self.timing_module = timing
+                self.timing_cpp_module = timing_cpp
+                logging.info("Using GangSTA timing analysis engine")
+            except ImportError as e:
+                raise ImportError(f"Failed to import GangSTA modules: {e}")
         else:  # heterosta
             try:
                 import dreamplace.ops.timing_heterosta.timing_hs as timing

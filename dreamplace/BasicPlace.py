@@ -570,10 +570,13 @@ class BasicPlace(nn.Module):
         @param placedb the placement database
         @param timer the timer object used in timing-driven mode
         """
-        # Check timer engine to use appropriate TimingOpt class
-        if hasattr(timer, 'timer_engine') and timer.timer_engine == "heterosta":
-            # Import HeteroSTA timing module
-            import dreamplace.ops.timing_heterosta.timing_hs as timing_hs
+        # Check timer engine to use appropriate TimingOpt class. GangSTA shares HeteroSTA's TimingOpt
+        # interface (same constructor args), so we alias its module as timing_hs and reuse this block.
+        if hasattr(timer, 'timer_engine') and timer.timer_engine in ("heterosta", "gangsta"):
+            if timer.timer_engine == "gangsta":
+                import dreamplace.ops.timing_gangsta.timing_gs as timing_hs
+            else:
+                import dreamplace.ops.timing_heterosta.timing_hs as timing_hs
 
             # Create GPU tensors for timing-specific data
             device = self.data_collections.net_weights.device

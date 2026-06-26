@@ -109,15 +109,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         }, "Count total number of endpoints", pybind11::arg("num_pins"))
         
         
-        .def("dump_paths_max_to_file", [](DREAMPLACE_NAMESPACE::TimerWrapper& wrapper, uintptr_t num_paths, 
-                                            uintptr_t nworst, const std::string& file_path,
-                                            bool use_cuda) {
-            heterosta_dump_paths_max_to_file(wrapper.get_raw_timer(), num_paths, nworst, file_path.c_str(), use_cuda);
-        }, "Dump timing report to file", 
-           pybind11::arg("num_paths"), pybind11::arg("nworst"), 
-           pybind11::arg("file_path"), pybind11::arg("use_cuda") = false)
-        
-        
+        // NOTE: gangsta_dump_paths_to_file is declared in gangsta.h but not yet implemented in the C
+        // API (gangsta_report_paths is the implemented path-query entry). The DREAMPlace timing-driven
+        // flow does not use file path dumps, so the binding is omitted until the C API provides it.
+
+
         // Add method to access raw timer pointer for compatibility 
         .def("get_raw_timer_ptr", [](DREAMPLACE_NAMESPACE::TimerWrapper& wrapper) -> uintptr_t {
             return reinterpret_cast<uintptr_t>(wrapper.get_raw_timer());
@@ -186,7 +182,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             // Add debug information about timing state
             GangstaTimer* sta = wrapper.get_raw_timer();
             
-            bool success = heterosta_report_wns_tns_max(sta, &wns, &tns, use_cuda);  // setup mode
+            bool success = gangsta_report_wns_tns(sta, GANGSTA_MAX, &wns, &tns, use_cuda);  // setup mode
             
             if (success) {
                 DREAMPLACE_NAMESPACE::dreamplacePrint(DREAMPLACE_NAMESPACE::kDEBUG, "WNS/TNS Report: WNS=%.3f, TNS=%.3f (gpu=%s)\n", 
@@ -204,16 +200,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         }, "Report WNS and TNS", pybind11::arg("wrapper"), pybind11::arg("use_cuda") = false);
 
     m.def("report_wns", [](DREAMPLACE_NAMESPACE::TimerWrapper& wrapper, bool use_cuda) {
-            float wns, tns; 
-            if (heterosta_report_wns_tns_max(wrapper.get_raw_timer(), &wns, &tns,use_cuda)) {
-                return wns;  
+            float wns, tns;
+            if (gangsta_report_wns_tns(wrapper.get_raw_timer(), GANGSTA_MAX, &wns, &tns, use_cuda)) {
+                return wns;
             }
             return std::nanf("");
         }, "Report WNS");
 
     m.def("report_tns", [](DREAMPLACE_NAMESPACE::TimerWrapper& wrapper, bool use_cuda) {
-            float wns, tns; 
-            if (heterosta_report_wns_tns_max(wrapper.get_raw_timer(), &wns, &tns, use_cuda)) {
+            float wns, tns;
+            if (gangsta_report_wns_tns(wrapper.get_raw_timer(), GANGSTA_MAX, &wns, &tns, use_cuda)) {
                 return tns;
             }
             return std::nanf("");
