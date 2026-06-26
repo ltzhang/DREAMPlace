@@ -25,8 +25,10 @@ cmake --build . --target timing_gangsta_cpp -j   # then `make install` (or copy 
 
 - **Open C API remap (no NetlistDB, no license):** `gangsta_set_netlist_inmem` replaces
   `netlistdb_new`/`heterosta_set_netlistdb`; `gangsta_set_delay_calculator(.,GANGSTA_DELAY_ELMORE)`,
-  `gangsta_report_slacks(.,GANGSTA_MAX,.)`, `gangsta_report_wns_tns(.,GANGSTA_MAX,.)` replace the
-  `*_at_max`/`*_max` HeteroSTA calls; `heterosta_init_license` deleted.
+  `gangsta_report_slacks(.,GANGSTA_MAX,.)`,
+  `gangsta_report_wns_tns_endpoint_worst(.,GANGSTA_MAX,.)` replace the `*_at_max`/`*_max`
+  HeteroSTA calls; `heterosta_init_license` deleted. DREAMPlace uses the endpoint-worst variant so
+  GangSTA's TNS has the same endpoint-counting semantics as OpenTimer's `report_tns_elw(split=1)`.
 - **Semantic seams (validated on `superblue4`):**
   1. **0-based cells** — `totalcells = numMovable + numFixed`, no top-module sentinel; `pin2cell = node_id`.
   2. **Keep the `:` pin separator** — GangSTA detects top ports by the *absence* of `:` and reads the
@@ -96,26 +98,28 @@ Two fixes were needed to get here, both now committed:
 
 ### Head-to-head vs OpenTimer (same design, same SDC)
 
-Ran `timer_engine=gangsta` and `timer_engine=opentimer` on the SAME `iccad2015.ot/superblue4`
-(identical `.v`/`.lib`/`.sdc`, deterministic placement, so each timer's *first* eval sees identical
-coords). Per-timing-step WNS / TNS (ns):
+The first OpenTimer comparison exposed a real reporting mismatch: DREAMPlace's OpenTimer path reports
+TNS with `report_tns_elw(split=1)`, which counts each endpoint once using its worse finite rise/fall
+slack. The original GangSTA binding called `gangsta_report_wns_tns`, whose TNS intentionally counts
+each finite `(endpoint, rise/fall)` check separately. On `superblue4` that made GangSTA TNS look much
+more pessimistic even when WNS and units were sane.
 
-| step | gangsta WNS | OpenTimer WNS | gangsta TNS | OpenTimer TNS |
-|---|---|---|---|---|
-| 1 | −43.96 | −54.83 | −5173 | −625 |
-| 2 | −39.77 | −40.83 | −5061 | −422 |
-| 3 | −33.93 | −28.39 | −5023 | −263 |
-| 4 | −28.69 | −18.62 | −5050 | −174 |
-| 5 | −26.63 | −13.59 | −5110 | −135 |
+The DREAMPlace binding now calls `gangsta_report_wns_tns_endpoint_worst`, preserving the old
+per-rise/fall C API for MCMM and standalone users while matching OpenTimer's DREAMPlace metric.
 
-**WNS agrees within ~1.5–2× of OpenTimer (same units, sign, and improving trend); step 1 — the
-closest-coords point — agrees to ~20% (−44 vs −55).** WNS drifts apart in later steps because the two
-timers compute different criticalities → different net weights → divergent placements. **TNS is ~10×
-more pessimistic in gangsta**, consistent with its documented per-sink **star** RC model
-over-estimating long-net delay vs OpenTimer's lumped/Steiner RC (a known approximation, not a bug) and
-counting more violating endpoints. This is the expected level of agreement for two different STA
-engines with different RC extraction; it validates the integration end-to-end against the gold open
-reference.
+Clean no-legalization checkpoint on `iccad2015.ot/superblue4`, deterministic placement, first timing
+feedback at iteration 510 (same `.v`/`.lef`/`.def`/Liberty/`.sdc`):
+
+| timer | WNS | TNS |
+|---|---:|---:|
+| GangSTA | −18.657713 | −271.410240 |
+| OpenTimer | −18.979207 | −174.001920 |
+
+WNS now agrees within ~2%, and TNS is the same endpoint-counted quantity. The remaining TNS delta is
+expected from independent delay/RC and path-criticality models, not from DREAMPlace integration
+plumbing. In the legalize-enabled 6-iteration diagnostic, the post-legalization point is much less
+stable (`GangSTA −144.724/−14850.186`, OpenTimer −1010.791/−64728.689 for WNS/TNS), so the
+no-legalization timing-feedback checkpoint is the cleaner integration parity test.
 
 ## Not yet done
 

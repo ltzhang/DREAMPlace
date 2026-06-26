@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "timing_gs_cpp.h"
 #include "timing_gs_io_cpp.h"
 #include <cstring>
@@ -106,6 +107,13 @@ int timingHeterostaCppLauncher(
 			via_res, flute_accuracy, pdr_alpha, use_flute_or_pdr, /*use_gpu=*/false);
 	if (const char* e = gangsta_last_error(&sta); e && e[0]) {
 		dreamplacePrint(kWARN, "extract_rc_from_placement: %s\n", e);
+	}
+
+	// Debug: dump the synthesized FLUTE placement RC once to GANGSTA_WRITE_SPEF, so the EXACT RC
+	// gangsta times can be fed to an external oracle (OpenSTA/OpenTimer) for a matched-RC differential.
+	// Overwrite each pass so the final file corresponds to the final reported placement (matched RC).
+	if (const char* sp = std::getenv("GANGSTA_WRITE_SPEF")) {
+		gangsta_write_spef(&sta, sp); dreamplacePrint(kINFO, "wrote SPEF %s\n", sp);
 	}
 
 	gangsta_update_delay(&sta, false);

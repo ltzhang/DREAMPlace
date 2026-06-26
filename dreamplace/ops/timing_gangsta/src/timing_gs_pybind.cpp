@@ -182,7 +182,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             // Add debug information about timing state
             GangstaTimer* sta = wrapper.get_raw_timer();
             
-            bool success = gangsta_report_wns_tns(sta, GANGSTA_MAX, &wns, &tns, use_cuda);  // setup mode
+            bool success = gangsta_report_wns_tns_endpoint_worst(sta, GANGSTA_MAX, &wns, &tns, use_cuda);  // setup mode
             
             if (success) {
                 DREAMPLACE_NAMESPACE::dreamplacePrint(DREAMPLACE_NAMESPACE::kDEBUG, "WNS/TNS Report: WNS=%.3f, TNS=%.3f (gpu=%s)\n", 
@@ -201,7 +201,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("report_wns", [](DREAMPLACE_NAMESPACE::TimerWrapper& wrapper, bool use_cuda) {
             float wns, tns;
-            if (gangsta_report_wns_tns(wrapper.get_raw_timer(), GANGSTA_MAX, &wns, &tns, use_cuda)) {
+            if (gangsta_report_wns_tns_endpoint_worst(wrapper.get_raw_timer(), GANGSTA_MAX, &wns, &tns, use_cuda)) {
                 return wns;
             }
             return std::nanf("");
@@ -209,7 +209,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("report_tns", [](DREAMPLACE_NAMESPACE::TimerWrapper& wrapper, bool use_cuda) {
             float wns, tns;
-            if (gangsta_report_wns_tns(wrapper.get_raw_timer(), GANGSTA_MAX, &wns, &tns, use_cuda)) {
+            if (gangsta_report_wns_tns_endpoint_worst(wrapper.get_raw_timer(), GANGSTA_MAX, &wns, &tns, use_cuda)) {
                 return tns;
             }
             return std::nanf("");
