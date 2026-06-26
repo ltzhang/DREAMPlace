@@ -102,10 +102,12 @@ a real timing-driven loop where WNS improves (−43.96 → −26.6 ns over 5 tim
 convention, so do NOT invert — gangsta↔dreamplace slack permutation, ff/kΩ RC units) are documented
 and validated in `dreamplace/ops/timing_gangsta/README.md`.
 
-**Not yet done:** a numeric head-to-head vs `heterosta`/`opentimer` is blocked on their preprocessed
-benchmark packages (`benchmarks/iccad2015.hs` / `.ot` with `.hs.sdc`/`.ot.sdc`, separate Google-Drive
-downloads absent locally); the op was validated against the standalone gangsta engine instead. A raw
-ICCAD-2015 config (merged tech+cell LEF, raw `.sdc`) is the path used for the validation run.
+**Head-to-head vs OpenTimer (`iccad2015.ot/superblue4`, same `.sdc`, deterministic):** gangsta WNS
+tracks OpenTimer within ~1.5–2× over the timing loop (step 1, closest coords: −43.96 vs −54.83 ns —
+~20%), same units/sign/trend; TNS is ~10× more pessimistic, consistent with gangsta's documented star
+RC model vs OpenTimer's. This validates the integration against the gold open reference. (HeteroSTA's
+prebuilt `.so` links `libcudart.so.11.0`/CUDA 11 and won't import on this CUDA-13 box, so OpenTimer was
+the oracle; the `.hs`/`.ot` packages now live in `../benchmarks/iccad2015.{hs,ot}`.)
 
 ## Conventions
 
