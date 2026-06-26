@@ -87,7 +87,19 @@ int timingHeterostaCppLauncher(
 	const float via_res = 0.0f;
 	const uint32_t flute_accuracy = 8;
 	const float pdr_alpha = 0.3f;
-	const uint8_t use_flute_or_pdr = 0;
+	const uint8_t use_flute_or_pdr = 0;  // 0 = FLUTE Steiner (matches OpenTimer/HeteroSTA)
+	// Load the FLUTE rectilinear-Steiner LUT once (idempotent) so gangsta builds the SAME RC topology
+	// the reference timers do. GANGSTA_FLUTE_LUT_DIR is baked in at build time from GANGSTA_ROOT.
+#ifdef GANGSTA_FLUTE_LUT_DIR
+	static const bool flute_lut_ready = gangsta_load_flute_lut(
+			GANGSTA_FLUTE_LUT_DIR "/POWV9.dat", GANGSTA_FLUTE_LUT_DIR "/POST9.dat");
+	if (!flute_lut_ready)
+		dreamplacePrint(kWARN, "gangsta FLUTE LUT not found at %s; RC extraction will fail\n",
+				GANGSTA_FLUTE_LUT_DIR);
+#endif
+	// Zero the wire R/C of high-fanout nets (the clock), exactly as the OpenTimer reference does, so a
+	// propagated clock net does not get spurious interconnect delay.
+	gangsta_set_rc_ignore_net_degree(&sta, ignore_net_degree);
 	gangsta_extract_rc_from_placement(&sta, xs_g.data(), ys_g.data(),
 			static_cast<float>(unit_cap_xy), static_cast<float>(unit_cap_xy),
 			static_cast<float>(unit_res_xy), static_cast<float>(unit_res_xy),

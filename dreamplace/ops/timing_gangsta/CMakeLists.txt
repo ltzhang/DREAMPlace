@@ -10,11 +10,15 @@ set(TARGET_NAME ${OP_NAME})
 get_filename_component(GANGSTA_ROOT_DEFAULT "${PROJECT_SOURCE_DIR}/../.." ABSOLUTE)
 set(GANGSTA_ROOT "${GANGSTA_ROOT_DEFAULT}" CACHE PATH "Path to the gangsta repo root (contains include/ and build/src/libgangsta.a)")
 find_library(GANGSTA_LIB NAMES gangsta HINTS "${GANGSTA_ROOT}/build/src" "${GANGSTA_ROOT}/build")
+# gangsta's vendored FLUTE (separate static archive — static libs don't bundle each other, so the
+# extension must link it explicitly for the Steiner RC symbols).
+find_library(GANGSTA_FLUTE_LIB NAMES gangsta_flute HINTS "${GANGSTA_ROOT}/build/src" "${GANGSTA_ROOT}/build")
+set(GANGSTA_FLUTE_LUT_DIR "${GANGSTA_ROOT}/third_party/flute/lut.ICCAD2015")
 find_library(GANGSTA_TCL_LIBRARY NAMES tcl8.6 tcl)  # gangsta's embedded-Tcl SDC parser dependency
-if(NOT (GANGSTA_LIB AND EXISTS "${GANGSTA_ROOT}/include/gangsta/gangsta.h" AND GANGSTA_TCL_LIBRARY))
-  message(FATAL_ERROR "timing_gangsta: GangSTA not found (lib=${GANGSTA_LIB} tcl=${GANGSTA_TCL_LIBRARY} root=${GANGSTA_ROOT}); build gangsta (cmake --build build) or pass -DGANGSTA_ROOT")
+if(NOT (GANGSTA_LIB AND GANGSTA_FLUTE_LIB AND EXISTS "${GANGSTA_ROOT}/include/gangsta/gangsta.h" AND GANGSTA_TCL_LIBRARY))
+  message(FATAL_ERROR "timing_gangsta: GangSTA not found (lib=${GANGSTA_LIB} flute=${GANGSTA_FLUTE_LIB} tcl=${GANGSTA_TCL_LIBRARY} root=${GANGSTA_ROOT}); build gangsta (cmake --build build) or pass -DGANGSTA_ROOT")
 endif()
-message(STATUS "timing_gangsta: GangSTA ENABLED (${GANGSTA_LIB}, tcl=${GANGSTA_TCL_LIBRARY})")
+message(STATUS "timing_gangsta: GangSTA ENABLED (${GANGSTA_LIB}, flute=${GANGSTA_FLUTE_LIB}, tcl=${GANGSTA_TCL_LIBRARY})")
 
 set(INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -79,9 +83,11 @@ else()
 endif()
 
 
-# GangSTA is a PIC static archive (libgangsta.a) plus its embedded-Tcl SDC dependency. Static-link both
-# so the extension has no runtime .so dependency on gangsta.
-target_link_libraries(${TARGET_NAME}_cpp PRIVATE ${GANGSTA_LIB} ${GANGSTA_TCL_LIBRARY})
+# GangSTA is a PIC static archive (libgangsta.a) + its vendored FLUTE archive + its embedded-Tcl SDC
+# dependency. Static-link all so the extension has no runtime .so dependency on gangsta.
+target_link_libraries(${TARGET_NAME}_cpp PRIVATE ${GANGSTA_LIB} ${GANGSTA_FLUTE_LIB} ${GANGSTA_TCL_LIBRARY})
+# Bake in the path to gangsta's vendored ICCAD-2015 FLUTE LUT so the op loads it at runtime.
+target_compile_definitions(${TARGET_NAME}_cpp PRIVATE GANGSTA_FLUTE_LUT_DIR="${GANGSTA_FLUTE_LUT_DIR}")
 
 set_target_properties(${TARGET_NAME}_cpp PROPERTIES
     BUILD_RPATH "$ORIGIN"
