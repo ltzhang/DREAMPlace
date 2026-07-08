@@ -874,6 +874,22 @@ class NonLinearPlace(BasicPlace.BasicPlace):
         if params.plot_flag:
             self.plot(params, placedb, iteration, self.pos[0].data.clone().cpu().numpy())
 
+        # Non-finite guard (WiseSyn Milestone-D, ADR-0033): on a tiny/degenerate design, global
+        # placement can diverge to NaN/Inf (e.g. HPWL collapses to 0, so check_divergence's ratio is
+        # itself NaN and never trips). The legalization ops assert-and-abort() on non-finite coords,
+        # which would kill the whole embedded-interpreter process — uncatchable by the caller. Fail
+        # loudly with a Python exception instead, so the WiseSyn bridge falls back to naive placement
+        # (rule #7) rather than crashing. Prefer the best finite iterate if one was recorded.
+        if not bool(torch.isfinite(self.pos[0].data).all().item()):
+            if best_pos[0] is not None and bool(torch.isfinite(best_pos[0].data).all().item()):
+                logging.warning("global placement diverged to non-finite coordinates; "
+                                "restoring the best finite iterate before legalization")
+                self.pos[0].data.copy_(best_pos[0].data)
+            if not bool(torch.isfinite(self.pos[0].data).all().item()):
+                raise RuntimeError(
+                    "global placement diverged to non-finite coordinates (no finite iterate to "
+                    "recover) — likely a degenerate/tiny design; aborting placement")
+
         # legalization
         if params.legalize_flag:
             tt = time.time()
