@@ -31,7 +31,10 @@ import dreamplace.ops.global_swap.global_swap as global_swap
 import dreamplace.ops.k_reorder.k_reorder as k_reorder
 import dreamplace.ops.independent_set_matching.independent_set_matching as independent_set_matching
 import dreamplace.ops.pin_weight_sum.pin_weight_sum as pws
-import dreamplace.ops.timing.timing as timing
+# NOTE: the timing ops (timing / timing_heterosta / timing_gangsta) are imported LAZILY inside
+# build_timing_opt() below, not at module load. They are gated out of a timing-free build
+# (DREAMPLACE_ENABLE_TIMING=OFF; WiseSyn Milestone-D core-placement path, ADR-0033), so importing them
+# eagerly would break the wirelength-driven placement flow that never touches a timer.
 import pdb
 
 
@@ -610,7 +613,8 @@ class BasicPlace(nn.Module):
                 ignore_net_degree=params.ignore_net_degree,
                 use_cuda=params.gpu)  # Use params.gpu for CUDA setting
         else:
-            # Use OpenTimer
+            # Use OpenTimer (lazy import — gated out of a timing-free build; see the note at the top).
+            import dreamplace.ops.timing.timing as timing
             return timing.TimingOpt(
                 timer, # The timer should be at the same level as placedb.
                 placedb.net_names, # The net names are required by OpenTimer.

@@ -146,6 +146,12 @@ endif(CUDA_FOUND)
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/dreamplace/configure.py.in ${CMAKE_CURRENT_BINARY_DIR}/dreamplace/configure.py)
 
+# Build the timing-driven stack (OpenTimer/HeteroSTA thirdparty engines + the timing ops) only when
+# requested. Off ⇒ core (wirelength-driven) placement builds with no timing engine — and, crucially,
+# HeteroSTA's configure-time network download is skipped. Default ON preserves upstream behavior.
+# (WiseSyn Milestone-D core-placement path builds with -DDREAMPLACE_ENABLE_TIMING=OFF; ADR-0033.)
+option(DREAMPLACE_ENABLE_TIMING "Build the timing-driven engines/ops (OpenTimer / HeteroSTA / timing*)" ON)
+
 add_subdirectory(thirdparty)
 add_subdirectory(dreamplace)
 add_subdirectory(unittest)

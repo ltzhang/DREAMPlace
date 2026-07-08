@@ -13,3 +13,9 @@ install
 *.so
 .DS_Store
 .vscode/*
+# WiseSyn Milestone-D (ADR-0033) local build/install artifacts — generated, never committed.
+/build-cpu/
+/install-cpu/
+/include/
+/dreamplace/configure.py
+/unittest/ops/*/[!C]*_unittest

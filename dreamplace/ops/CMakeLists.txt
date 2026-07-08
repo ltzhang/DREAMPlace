@@ -28,11 +28,18 @@ add_subdirectory(rudy)
 add_subdirectory(pinrudy)
 add_subdirectory(nctugr_binary)
 add_subdirectory(adjust_node_area)
-# timing operator
+# timing operators. Gated so the core (wirelength-driven) placement builds without the timing engines:
+# timing_gangsta hard-requires a built GangSTA (see -DGANGSTA_ROOT) and timing_heterosta targets the
+# HeteroSTA/GPU timer — neither is needed unless timing_opt_flag is set (the Timer ops are lazy-imported
+# only then). Default ON preserves upstream behavior; pass -DDREAMPLACE_ENABLE_TIMING=OFF for a
+# timing-free build (WiseSyn Milestone-D core-placement path, ADR-0033).
+option(DREAMPLACE_ENABLE_TIMING "Build the timing-driven ops (timing / timing_heterosta / timing_gangsta)" ON)
 add_subdirectory(pin_weight_sum)
-add_subdirectory(timing)
-add_subdirectory(timing_heterosta)
-add_subdirectory(timing_gangsta)
+if(DREAMPLACE_ENABLE_TIMING)
+  add_subdirectory(timing)
+  add_subdirectory(timing_heterosta)
+  add_subdirectory(timing_gangsta)
+endif()
 # gift initial placement 
 add_subdirectory(gift_init)
 
