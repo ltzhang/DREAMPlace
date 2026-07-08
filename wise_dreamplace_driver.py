@@ -243,6 +243,14 @@ def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="
         if gpu and not torch.cuda.is_available():
             result["error"] = "gpu=1 requested but torch.cuda.is_available() is False (no CUDA/GPU)"
             return result
+        if (timer or "").strip().lower() in ("opentimer", "gangsta"):
+            # Timing-driven placement needs a Timer built from the design's .lib/.sdc, which WiseSyn does
+            # not yet hand to the DREAMPlace inner loop (recorded 🟡: timing-driven array-ingest,
+            # ADR-0033). Reject loudly here rather than run wirelength-driven and pretend it was timed (#7).
+            result["error"] = ("inner-loop timer '%s' requested, but WiseSyn does not yet feed .lib/.sdc "
+                               "to the DREAMPlace timer (deferred; ADR-0033). Run without -timer for "
+                               "wirelength-driven placement." % timer)
+            return result
 
         os.chdir(_HERE)
         logging.getLogger().setLevel(logging.WARNING)  # keep the embedded run quiet
@@ -304,6 +312,11 @@ def place(lef_paths, in_def, out_def, util=0.8, site="", seed=1000, deterministi
 
         if gpu and not torch.cuda.is_available():
             result["error"] = "gpu=1 requested but torch.cuda.is_available() is False (no CUDA/GPU)"
+            return result
+        if (timer or "").strip().lower() in ("opentimer", "gangsta"):
+            result["error"] = ("inner-loop timer '%s' requested, but WiseSyn does not yet feed .lib/.sdc "
+                               "to the DREAMPlace timer (deferred; ADR-0033). Run without -timer for "
+                               "wirelength-driven placement." % timer)
             return result
 
         os.chdir(_HERE)

@@ -28,16 +28,21 @@ add_subdirectory(rudy)
 add_subdirectory(pinrudy)
 add_subdirectory(nctugr_binary)
 add_subdirectory(adjust_node_area)
-# timing operators. Gated so the core (wirelength-driven) placement builds without the timing engines:
-# timing_gangsta hard-requires a built GangSTA (see -DGANGSTA_ROOT) and timing_heterosta targets the
-# HeteroSTA/GPU timer — neither is needed unless timing_opt_flag is set (the Timer ops are lazy-imported
-# only then). Default ON preserves upstream behavior; pass -DDREAMPLACE_ENABLE_TIMING=OFF for a
-# timing-free build (WiseSyn Milestone-D core-placement path, ADR-0033).
-option(DREAMPLACE_ENABLE_TIMING "Build the timing-driven ops (timing / timing_heterosta / timing_gangsta)" ON)
+# timing operators. Gated so the core (wirelength-driven) placement builds without the timing engines,
+# and so each engine builds independently (the Timer ops are lazy-imported only when timing_opt_flag is
+# set). DREAMPLACE_ENABLE_TIMING drives the upstream pair (OpenTimer `timing` + GPU `timing_heterosta`);
+# DREAMPLACE_ENABLE_GANGSTA drives the CPU GangSTA op alone, which hard-requires a built GangSTA (see
+# -DGANGSTA_ROOT) but needs NEITHER a GPU nor HeteroSTA's network fetch — so a CPU-only, GPU-free build
+# can carry the gangsta inner-loop timer (WiseSyn Milestone-D, ADR-0033). Default: upstream pair ON,
+# gangsta OFF (opt-in, since it needs the external GangSTA).
+option(DREAMPLACE_ENABLE_TIMING "Build the OpenTimer + HeteroSTA timing ops (timing / timing_heterosta)" ON)
+option(DREAMPLACE_ENABLE_GANGSTA "Build the GangSTA CPU timing op (timing_gangsta; needs -DGANGSTA_ROOT)" OFF)
 add_subdirectory(pin_weight_sum)
 if(DREAMPLACE_ENABLE_TIMING)
   add_subdirectory(timing)
   add_subdirectory(timing_heterosta)
+endif()
+if(DREAMPLACE_ENABLE_GANGSTA)
   add_subdirectory(timing_gangsta)
 endif()
 # gift initial placement 

@@ -342,11 +342,16 @@ bool TimingGangstaIO::buildTimerDB(GangstaTimer& sta) {
 
 	// Step 2: Ingest the in-memory netlist (replaces NetlistDB + heterosta_set_netlistdb). The pointer
 	// arrays were materialized by create_interface_arrays() and stay alive in g_netlist_data.
+	// The trailing out_{pin,net,cell}_ingest2engine mapping arrays are optional — this op remaps the
+	// engine ordering back to its own arrays by pin NAME (see gangsta_pin_name below), so it passes
+	// nullptr and lets gangsta skip building the caller->engine index maps.
 	if (!gangsta_set_netlist_inmem(&sta, g_netlist_data.design_name.c_str(),
 			num_cells, g_netlist_data.cell_name_ptrs.data(), g_netlist_data.cell_type_ptrs.data(),
 			num_pins, g_netlist_data.pin_name_ptrs.data(), g_netlist_data.pin_directions.data(),
 			g_netlist_data.pin2cell_map.data(), g_netlist_data.pin2net_map.data(),
-			num_nets, g_netlist_data.net_name_ptrs.data())) {
+			num_nets, g_netlist_data.net_name_ptrs.data(),
+			/*out_pin_ingest2engine=*/nullptr, /*out_net_ingest2engine=*/nullptr,
+			/*out_cell_ingest2engine=*/nullptr)) {
 		dreamplacePrint(kERROR, "gangsta_set_netlist_inmem failed: %s\n", gangsta_last_error(&sta));
 		return false;
 	}
