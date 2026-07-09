@@ -1107,7 +1107,7 @@ row height = %g, site width = %g
         # unscale locations
         node_x, node_y = self.unscale_pl(params.shift_factor, params.scale_factor)
 
-        # update raw database. The in-memory array-ingest path (WiseSyn Milestone-D, ADR-0033) has no
+        # update raw database. The in-memory array-ingest path (WiseSyn Milestone-D, ADR-0034) has no
         # rawdb — the placer's caller reads the solution straight from placedb.node_x/node_y, so there
         # is nothing to write back. Guard rather than crash on the missing C++ database.
         if self.rawdb is not None:

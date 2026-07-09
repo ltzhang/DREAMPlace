@@ -33,7 +33,7 @@ import dreamplace.ops.independent_set_matching.independent_set_matching as indep
 import dreamplace.ops.pin_weight_sum.pin_weight_sum as pws
 # NOTE: the timing ops (timing / timing_heterosta / timing_gangsta) are imported LAZILY inside
 # build_timing_opt() below, not at module load. They are gated out of a timing-free build
-# (DREAMPLACE_ENABLE_TIMING=OFF; WiseSyn Milestone-D core-placement path, ADR-0033), so importing them
+# (DREAMPLACE_ENABLE_TIMING=OFF; WiseSyn Milestone-D core-placement path, ADR-0034), so importing them
 # eagerly would break the wirelength-driven placement flow that never touches a timer.
 import pdb
 

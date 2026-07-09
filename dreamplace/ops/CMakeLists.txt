@@ -33,7 +33,7 @@ add_subdirectory(adjust_node_area)
 # set). DREAMPLACE_ENABLE_TIMING drives the upstream pair (OpenTimer `timing` + GPU `timing_heterosta`);
 # DREAMPLACE_ENABLE_GANGSTA drives the CPU GangSTA op alone, which hard-requires a built GangSTA (see
 # -DGANGSTA_ROOT) but needs NEITHER a GPU nor HeteroSTA's network fetch — so a CPU-only, GPU-free build
-# can carry the gangsta inner-loop timer (WiseSyn Milestone-D, ADR-0033). Default: upstream pair ON,
+# can carry the gangsta inner-loop timer (WiseSyn Milestone-D, ADR-0034). Default: upstream pair ON,
 # gangsta OFF (opt-in, since it needs the external GangSTA).
 option(DREAMPLACE_ENABLE_TIMING "Build the OpenTimer + HeteroSTA timing ops (timing / timing_heterosta)" ON)
 option(DREAMPLACE_ENABLE_GANGSTA "Build the GangSTA CPU timing op (timing_gangsta; needs -DGANGSTA_ROOT)" OFF)

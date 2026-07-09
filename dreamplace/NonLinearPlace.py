@@ -874,7 +874,7 @@ class NonLinearPlace(BasicPlace.BasicPlace):
         if params.plot_flag:
             self.plot(params, placedb, iteration, self.pos[0].data.clone().cpu().numpy())
 
-        # Non-finite guard (WiseSyn Milestone-D, ADR-0033): on a tiny/degenerate design, global
+        # Non-finite guard (WiseSyn Milestone-D, ADR-0034): on a tiny/degenerate design, global
         # placement can diverge to NaN/Inf (e.g. HPWL collapses to 0, so check_divergence's ratio is
         # itself NaN and never trips). The legalization ops assert-and-abort() on non-finite coords,
         # which would kill the whole embedded-interpreter process — uncatchable by the caller. Fail

@@ -1,4 +1,4 @@
-"""WiseSyn-owned seam over DREAMPlace's placement flow (ADR-0033, Milestone D).
+"""WiseSyn-owned seam over DREAMPlace's placement flow (ADR-0034, Milestone D).
 
 Isolates the wisesyn C++ embedding from DREAMPlace's ``Params``/``PlaceDB``/``NonLinearPlace``
 internals: two clean entry points, one file to update if DREAMPlace's option set drifts.
@@ -61,7 +61,7 @@ def _make_params(util, seed, deterministic, gpu, timer, result_dir):
     d["result_dir"] = result_dir
     # A design name for DREAMPlace's dump/log paths; no file is read on the array path.
     d["def_input"] = "wise_top.def"
-    # Inner-loop timer selection (ADR-0033). "" / "none" -> wirelength-driven (timing off).
+    # Inner-loop timer selection (ADR-0034). "" / "none" -> wirelength-driven (timing off).
     t = (timer or "").strip().lower()
     if t in ("opentimer", "gangsta"):
         d["timing_opt_flag"] = 1
@@ -246,9 +246,9 @@ def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="
         if (timer or "").strip().lower() in ("opentimer", "gangsta"):
             # Timing-driven placement needs a Timer built from the design's .lib/.sdc, which WiseSyn does
             # not yet hand to the DREAMPlace inner loop (recorded 🟡: timing-driven array-ingest,
-            # ADR-0033). Reject loudly here rather than run wirelength-driven and pretend it was timed (#7).
+            # ADR-0034). Reject loudly here rather than run wirelength-driven and pretend it was timed (#7).
             result["error"] = ("inner-loop timer '%s' requested, but WiseSyn does not yet feed .lib/.sdc "
-                               "to the DREAMPlace timer (deferred; ADR-0033). Run without -timer for "
+                               "to the DREAMPlace timer (deferred; ADR-0034). Run without -timer for "
                                "wirelength-driven placement." % timer)
             return result
 
@@ -315,7 +315,7 @@ def place(lef_paths, in_def, out_def, util=0.8, site="", seed=1000, deterministi
             return result
         if (timer or "").strip().lower() in ("opentimer", "gangsta"):
             result["error"] = ("inner-loop timer '%s' requested, but WiseSyn does not yet feed .lib/.sdc "
-                               "to the DREAMPlace timer (deferred; ADR-0033). Run without -timer for "
+                               "to the DREAMPlace timer (deferred; ADR-0034). Run without -timer for "
                                "wirelength-driven placement." % timer)
             return result
 
