@@ -1,6 +1,6 @@
 [submodule "thirdparty/Limbo"]
 	path = thirdparty/Limbo
-	url = https://github.com/limbo018/Limbo.git
+	url = git@github.com:ltzhang/Limbo.git
 [submodule "thirdparty/munkres-cpp"]
 	path = thirdparty/munkres-cpp
 	url = https://github.com/saebyn/munkres-cpp.git

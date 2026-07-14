@@ -99,6 +99,10 @@ class Interval
         {
             return high() - low();
         }
+        coordinate_type center() const
+        {
+            return (low() + high()) / 2;
+        }
 
         ///==== overload operators ====
         bool operator==(Interval const& rhs) const 
