@@ -55,7 +55,7 @@ def _make_params(util, seed, deterministic, gpu, timer, result_dir):
     d["deterministic_flag"] = 1 if deterministic else 0
     d["global_place_flag"] = 1
     d["legalize_flag"] = 1
-    d["detailed_place_flag"] = 0
+    d["detailed_place_flag"] = 1  # E1: detailed placement, fair+clean vs XPlace
     d["plot_flag"] = 0
     d["dtype"] = "float32"
     d["result_dir"] = result_dir
@@ -326,7 +326,7 @@ def place(lef_paths, in_def, out_def, util=0.8, site="", seed=1000, deterministi
         d = params.__dict__
         d["lef_input"] = list(lef_paths)
         d["def_input"] = in_def
-        d["detailed_place_flag"] = 0
+        d["detailed_place_flag"] = 1  # E1: detailed placement, fair+clean vs XPlace
 
         Placer.place(params, None)
 
