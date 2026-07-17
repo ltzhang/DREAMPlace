@@ -19,3 +19,4 @@ install
 /include/
 /dreamplace/configure.py
 /unittest/ops/*/[!C]*_unittest
+/bin/
