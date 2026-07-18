@@ -44,7 +44,7 @@ def available():
         return False
 
 
-def _make_params(util, seed, deterministic, gpu, timer, result_dir):
+def _make_params(util, seed, deterministic, gpu, timer, result_dir, detailed=1):
     """A DREAMPlace Params with defaults, tuned for a wirelength-driven (or timed) single run."""
     import Params
     params = Params.Params()
@@ -54,8 +54,11 @@ def _make_params(util, seed, deterministic, gpu, timer, result_dir):
     d["random_seed"] = int(seed)
     d["deterministic_flag"] = 1 if deterministic else 0
     d["global_place_flag"] = 1
-    d["legalize_flag"] = 1
-    d["detailed_place_flag"] = 1  # E1: detailed placement, fair+clean vs XPlace
+    # Legalize + detailed placement is a SELECTABLE mechanism (ADR-0032), driven by the caller's
+    # `detailed` flag — NOT a hard-coded core default. detailed=1 (default) → global+legalize+detailed
+    # (the fair-vs-XPlace comparison); detailed=0 → global-only (legalize/detailed off).
+    d["legalize_flag"] = 1 if detailed else 0
+    d["detailed_place_flag"] = 1 if detailed else 0
     d["plot_flag"] = 0
     d["dtype"] = "float32"
     d["result_dir"] = result_dir
@@ -224,7 +227,7 @@ def _build_placedb_from_arrays(arrays, params):
     return db, perm, num_mov
 
 
-def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer=""):
+def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="", detailed=1):
     """Run DREAMPlace global placement + legalization on an in-memory array netlist (no DEF on disk).
 
     Returns ``{"ok": bool, "coords": [[x,y], ...], "gp_hpwl": float, "error": str}`` where ``coords``
@@ -255,7 +258,7 @@ def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="
         os.chdir(_HERE)
         logging.getLogger().setLevel(logging.WARNING)  # keep the embedded run quiet
         outdir = tempfile.mkdtemp(prefix="wise_dreamplace_arr_")
-        params = _make_params(util, seed, deterministic, gpu, timer, outdir)
+        params = _make_params(util, seed, deterministic, gpu, timer, outdir, detailed)
 
         np.random.seed(params.random_seed)
         torch.manual_seed(params.random_seed)
@@ -295,7 +298,7 @@ def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="
             shutil.rmtree(outdir, ignore_errors=True)
 
 
-def place(lef_paths, in_def, out_def, util=0.8, site="", seed=1000, deterministic=True, gpu=0, timer=""):
+def place(lef_paths, in_def, out_def, util=0.8, site="", seed=1000, deterministic=True, gpu=0, timer="", detailed=1):
     """DEF-interchange fallback: run DREAMPlace's own LEF/DEF flow and copy the placed DEF to out_def.
 
     Returns ``{"ok": bool, "gp_hpwl": float, "error": str}``. Never raises across the boundary.
@@ -322,11 +325,13 @@ def place(lef_paths, in_def, out_def, util=0.8, site="", seed=1000, deterministi
         os.chdir(_HERE)
         logging.getLogger().setLevel(logging.WARNING)
         outdir = tempfile.mkdtemp(prefix="wise_dreamplace_def_")
-        params = _make_params(util, seed, deterministic, gpu, timer, outdir)
+        params = _make_params(util, seed, deterministic, gpu, timer, outdir, detailed)
         d = params.__dict__
         d["lef_input"] = list(lef_paths)
         d["def_input"] = in_def
-        d["detailed_place_flag"] = 1  # E1: detailed placement, fair+clean vs XPlace
+        # legalize/detailed already set from `detailed` in _make_params; keep them consistent here.
+        d["legalize_flag"] = 1 if detailed else 0
+        d["detailed_place_flag"] = 1 if detailed else 0
 
         Placer.place(params, None)
 
