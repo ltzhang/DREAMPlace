@@ -200,7 +200,13 @@ void legalizeBinCPU(
                     std::vector<Blank<T> >& blanks = bin_blanks.at(best_blank_bin_id);
                     Blank<T>& blank = blanks.at(best_blank_bi[row_offset]); 
                     dreamplaceAssert(best_xl >= blank.xl && best_xl+width <= blank.xh);
-                    dreamplaceAssert(best_yl+row_height*row_offset == blank.yl);
+                    // The target row of a multi-row cell (best_yl + row_height*row_offset) must line up
+                    // with the blank's row (blank.yl). Compare with a tolerance rather than exact float
+                    // equality: when row_height is not an integer in the scaled coordinate system (a PDK
+                    // whose row_height/site_width is non-integer, e.g. gt2n's 24/7), best_yl and
+                    // row_height*row_offset accumulate float32 rounding, so an exactly-aligned row fails
+                    // `==` and aborts a legal placement. Tolerance is relative to the row pitch.
+                    dreamplaceAssert(std::abs(best_yl+row_height*row_offset - blank.yl) <= 1e-3*row_height);
                     if (best_xl == blank.xl)
                     {
                         // update blank 
