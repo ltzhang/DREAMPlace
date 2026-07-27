@@ -10,6 +10,7 @@
 #include <cmath>
 #include <vector>
 #include "blank.h"
+#include "utility/src/row_grid.h"
 #include "utility/src/utils.h"
 
 DREAMPLACE_BEGIN_NAMESPACE
@@ -76,8 +77,8 @@ void distributeBlanks2BinsCPU(
     const T* x, const T* y, const T* node_size_x, const T* node_size_y,
     const std::vector<std::vector<int> >& bin_fixed_cells, T bin_size_x,
     T bin_size_y, T blank_bin_size_y, T xl, T yl, T xh, T yh, T site_width,
-    T row_height, int num_bins_x, int num_bins_y, int blank_num_bins_y,
-    std::vector<std::vector<Blank<T> > >& bin_blanks) {
+    T row_height, const RowGrid<T>& rows, int num_bins_x, int num_bins_y,
+    int blank_num_bins_y, std::vector<std::vector<Blank<T> > >& bin_blanks) {
   for (int i = 0; i < num_bins_x * num_bins_y; i += 1) {
     int bin_id_x = i / num_bins_y;
     int bin_id_y = i - bin_id_x * num_bins_y;
@@ -85,10 +86,22 @@ void distributeBlanks2BinsCPU(
     // They have the same width, but the heights are different. 
     // A bin contains multiple blank_bins stacking in y direction.  
     // Ideally, blank_bin_size_y should be row_height, but you need to double-check this. 
-    int blank_num_bins_per_bin = roundDiv(bin_size_y, blank_bin_size_y);
-    int blank_bin_id_yl = bin_id_y * blank_num_bins_per_bin;
-    int blank_bin_id_yh =
-        std::min(blank_bin_id_yl + blank_num_bins_per_bin, blank_num_bins_y);
+    // A blank bin is one physical ROW. On a uniform core that is the original
+    // roundDiv(bin_size_y, row_height) count; on a mixed core the rows are not a
+    // constant pitch, so the bin's row span is looked up in the row table instead.
+    int blank_bin_id_yl, blank_bin_id_yh, blank_num_bins_per_bin;
+    if (rows.uniform()) {
+      blank_num_bins_per_bin = roundDiv(bin_size_y, blank_bin_size_y);
+      blank_bin_id_yl = bin_id_y * blank_num_bins_per_bin;
+      blank_bin_id_yh =
+          std::min(blank_bin_id_yl + blank_num_bins_per_bin, blank_num_bins_y);
+    } else {
+      blank_bin_id_yl = std::max(rows.row_index_floor(yl + bin_id_y * bin_size_y), 0);
+      blank_bin_id_yh = std::min(
+          rows.row_index_ceil(std::min(yl + (bin_id_y + 1) * bin_size_y, yh)),
+          blank_num_bins_y);
+      blank_num_bins_per_bin = blank_bin_id_yh - blank_bin_id_yl;
+    }
     T bin_xl = xl + bin_id_x * bin_size_x;
     T bin_xh = std::min(bin_xl + bin_size_x, xh);
     T bin_yl = yl + bin_id_y * bin_size_y; 
@@ -98,20 +111,27 @@ void distributeBlanks2BinsCPU(
     // to enumerate rows within the bin. 
     for (int blank_bin_id_y = blank_bin_id_yl; blank_bin_id_y < blank_bin_id_yh;
          ++blank_bin_id_y) {
-      T blank_bin_yl = yl + blank_bin_id_y * blank_bin_size_y;
-      T blank_bin_yh = std::min(blank_bin_yl + blank_bin_size_y, bin_yh);
+      T blank_bin_yl = rows.uniform() ? yl + blank_bin_id_y * blank_bin_size_y
+                                      : rows.row_bottom(blank_bin_id_y);
+      T blank_bin_yh = rows.uniform()
+                           ? std::min(blank_bin_yl + blank_bin_size_y, bin_yh)
+                           : blank_bin_yl + rows.row_height(blank_bin_id_y);
       int blank_bin_id = bin_id_x * blank_num_bins_y + blank_bin_id_y;
 
       // Collect initial blanks within each blank bin. 
       // If the blank_bin_size_y == row_height, then only one blank will be added. 
-      for (T by = blank_bin_yl; by < blank_bin_yh; by += row_height) {
+      // On a mixed core the blank spans exactly the one row this bin IS, whose height is
+      // the row's own -- never the shortest row height, which would leave a taller row
+      // partly uncovered and let a cell land on a y that is no row's bottom edge.
+      T row_step = rows.uniform() ? row_height : rows.row_height(blank_bin_id_y);
+      for (T by = blank_bin_yl; by < blank_bin_yh; by += row_step) {
         Blank<T> blank;
         blank.xl = floorDiv((bin_xl - xl), site_width) * site_width +
           xl;  // align blanks to sites
         blank.xh = floorDiv((bin_xh - xl), site_width) * site_width +
           xl;  // align blanks to sites
         blank.yl = by;
-        blank.yh = by + row_height;
+        blank.yh = by + row_step;
 
         bin_blanks.at(blank_bin_id).push_back(blank);
       }
@@ -131,8 +151,14 @@ void distributeBlanks2BinsCPU(
       T node_xh = node_xl + node_size_x[node_id];
       T node_yh = node_yl + node_size_y[node_id];
 
-      int cell_blank_bin_id_yl = blank_bin_id_yl + std::max((int)floorDiv(node_yl - bin_yl, blank_bin_size_y), 0); 
-      int cell_blank_bin_id_yh = blank_bin_id_yl + std::min((int)ceilDiv(node_yh - bin_yl, blank_bin_size_y), blank_num_bins_per_bin); 
+      int cell_blank_bin_id_yl, cell_blank_bin_id_yh;
+      if (rows.uniform()) {
+        cell_blank_bin_id_yl = blank_bin_id_yl + std::max((int)floorDiv(node_yl - bin_yl, blank_bin_size_y), 0);
+        cell_blank_bin_id_yh = blank_bin_id_yl + std::min((int)ceilDiv(node_yh - bin_yl, blank_bin_size_y), blank_num_bins_per_bin);
+      } else {
+        cell_blank_bin_id_yl = std::max(rows.row_index_floor(node_yl), blank_bin_id_yl);
+        cell_blank_bin_id_yh = std::min(rows.row_index_ceil(node_yh), blank_bin_id_yh);
+      }
       for (int cell_blank_bin_id_y = cell_blank_bin_id_yl; 
           cell_blank_bin_id_y < cell_blank_bin_id_yh; ++cell_blank_bin_id_y) {
         int blank_bin_id = bin_id_x * blank_num_bins_y + cell_blank_bin_id_y;

@@ -33,6 +33,23 @@ using namespace boost::polygon::operators;
 
 DREAMPLACE_BEGIN_NAMESPACE
 
+namespace {
+
+/// @brief The leading token of a LEF CLASS string.
+///
+/// A LEF MACRO CLASS is a class plus an OPTIONAL subclass: `CLASS CORE ;` but also
+/// `CLASS CORE TIELOW ;`, `CLASS CORE SPACER ;`, `CLASS CORE WELLTAP ;`, `CLASS BLOCK BLACKBOX ;`.
+/// Comparing the whole string against "CORE" therefore misclassifies every subclassed standard cell
+/// as a non-core object. Compare the leading token instead, which is what the class actually is.
+std::string leadingClassToken(std::string const& class_name) {
+  std::size_t bgn = class_name.find_first_not_of(" \t\n\r");
+  if (bgn == std::string::npos) return std::string();
+  std::size_t end = class_name.find_first_of(" \t\n\r", bgn);
+  return class_name.substr(bgn, (end == std::string::npos) ? std::string::npos : end - bgn);
+}
+
+}  // anonymous namespace
+
 /// default constructor
 PlaceDB::PlaceDB() {
   m_coreSiteId = 0;
@@ -353,7 +370,13 @@ void PlaceDB::add_def_component(DefParser::Component const& c) {
   if (!c.status.empty()) {
     node.setStatus(c.status); 
   }
-  if (!limbo::iequals(macro.className(), "CORE") && !limbo::iequals(macro.className(), "BLOCK")) {
+  // A LEF CLASS carries an optional subclass, so the class of `CLASS CORE TIELOW ;` is CORE -- a
+  // perfectly ordinary, placeable standard cell. Matching the whole CLASS string against "CORE"
+  // classified every subclassed cell (CORE TIELOW/TIEHIGH/SPACER/WELLTAP/ANTENNACELL, BLOCK
+  // BLACKBOX) as a non-core object and then ABORTED the process whenever such a cell arrived
+  // UNPLACED -- which is exactly how a tie cell arrives before placement. Compare the leading token.
+  std::string const macro_class = leadingClassToken(macro.className());
+  if (!limbo::iequals(macro_class, "CORE") && !limbo::iequals(macro_class, "BLOCK")) {
     // always fix cells whose macro class is not CORE or BLOCK
     dreamplaceAssertMsg(node.status() == PlaceStatusEnum::FIXED ||
                             node.status() == PlaceStatusEnum::PLACED,

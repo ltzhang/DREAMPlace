@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <iostream>
 #include <vector>
+#include "utility/src/row_grid.h"
 #include "utility/src/utils.h"
 
 DREAMPLACE_BEGIN_NAMESPACE
@@ -123,13 +124,27 @@ template <typename T>
 void distributeMovableAndFixedCells2BinsCPU(
     const T* x, const T* y, const T* node_size_x, const T* node_size_y,
     T bin_size_x, T bin_size_y, T xl, T yl, T xh, T yh, T site_width, 
+    const RowGrid<T>& rows, 
     int num_bins_x, int num_bins_y, int num_nodes, int num_movable_nodes,
     std::vector<std::vector<int> >& bin_cells) {
   for (int i = 0; i < num_nodes; i += 1) {
-    if (i < num_movable_nodes && roundDiv(node_size_y[i], bin_size_y) <= 1) {
+    // "Single-row" means the cell occupies exactly ONE row. On a uniform core that is
+    // roundDiv(height, row_height) <= 1 as before. On a mixed core rounding is exactly the trap:
+    // a 9-track cell is 1.29 shortest-rows, rounds to 1, and is then packed into a 7-track row it
+    // does not fit. Ask the row table which row the cell sits in and whether that row IS its height.
+    bool single_row;
+    int row_id = -1;
+    if (rows.uniform()) {
+      single_row = (roundDiv(node_size_y[i], bin_size_y) <= 1);
+    } else {
+      row_id = rows.row_index_floor(y[i]);
+      single_row = (row_id >= 0 && row_id < rows.num_rows_incl_partial() &&
+                    rows.rows_spanned(row_id, node_size_y[i]) == 1);
+    }
+    if (i < num_movable_nodes && single_row) {
       // single-row movable nodes only distribute to one bin
       int bin_id_x = (x[i] + node_size_x[i] / 2 - xl) / bin_size_x;
-      int bin_id_y = (y[i] + node_size_y[i] / 2 - yl) / bin_size_y;
+      int bin_id_y = rows.uniform() ? (int)((y[i] + node_size_y[i] / 2 - yl) / bin_size_y) : row_id;
 
       bin_id_x = std::min(std::max(bin_id_x, 0), num_bins_x - 1);
       bin_id_y = std::min(std::max(bin_id_y, 0), num_bins_y - 1);
@@ -146,11 +161,17 @@ void distributeMovableAndFixedCells2BinsCPU(
       int bin_id_xh = std::min(
           (int)ceilDiv(x[node_id] + node_size_x[node_id] - xl, bin_size_x, NumericTolerance<T>::rtol * site_width / bin_size_x),
           num_bins_x);
-      int bin_id_yl = std::max((y[node_id] - yl) / bin_size_y, (T)0);
-      // the problem above usually does not appear in y direction, because bin_size_y is row height 
-      int bin_id_yh = std::min(
-          (int)ceilDiv(y[node_id] + node_size_y[node_id] - yl, bin_size_y),
-          num_bins_y);
+      int bin_id_yl, bin_id_yh;
+      if (rows.uniform()) {
+        bin_id_yl = std::max((y[node_id] - yl) / bin_size_y, (T)0);
+        // the problem above usually does not appear in y direction, because bin_size_y is row height
+        bin_id_yh = std::min(
+            (int)ceilDiv(y[node_id] + node_size_y[node_id] - yl, bin_size_y),
+            num_bins_y);
+      } else {
+        bin_id_yl = std::max(rows.row_index_floor(y[node_id]), 0);
+        bin_id_yh = std::min(rows.row_index_ceil(y[node_id] + node_size_y[node_id]), num_bins_y);
+      }
 
       for (int bin_id_x = bin_id_xl; bin_id_x < bin_id_xh; ++bin_id_x) {
         for (int bin_id_y = bin_id_yl; bin_id_y < bin_id_yh; ++bin_id_y) {
@@ -338,6 +359,7 @@ void abacusLegalizeRowCPU(
     const T* init_x, const T* node_size_x, const T* node_size_y,
     const T* node_weights, T* x, T* y, const T xl, const T xh, const T yl, const T yh, 
     const T site_width, const T bin_size_x, const T bin_size_y, 
+    const RowGrid<T>& rows, 
     const int num_bins_x, const int num_bins_y, const int num_nodes, const int num_movable_nodes,
     std::vector<std::vector<int> >& bin_cells,
     std::vector<std::vector<AbacusCluster<T> > >& bin_clusters) {
@@ -354,13 +376,17 @@ void abacusLegalizeRowCPU(
     int num_row_nodes = row2nodes.size();
 
     int bin_id_x = i / num_bins_y;
-    // int bin_id_y = i-bin_id_x*num_bins_y;
+    int bin_id_y = i - bin_id_x * num_bins_y;
 
     T bin_xl = xl + bin_size_x * bin_id_x;
     T bin_xh = std::min(bin_xl + bin_size_x, xh);
+    // A bin IS one physical row, so the row height this bin legalizes at is that row's OWN height.
+    // On a uniform core that is bin_size_y, unchanged; on a mixed core the 9-track rows and the
+    // 7-track rows each pack at their own height, which is what makes a 9-track cell single-row.
+    T bin_row_height = rows.uniform() ? bin_size_y : rows.row_height(bin_id_y);
 
     abacusPlaceRowCPU(init_x, node_size_x, node_size_y, node_weights, x,
-                      site_width, bin_size_y,  // must be equal to row_height
+                      site_width, bin_row_height,  // the height of THIS row
                       bin_xl, bin_xh, num_nodes, num_movable_nodes,
                       row2nodes.data(), clusters.data(), num_row_nodes);
   }
@@ -378,20 +404,22 @@ void abacusLegalizationCPU(const T* init_x, const T* init_y,
                            const T* node_weights, T* x, T* y, const T xl,
                            const T yl, const T xh, const T yh,
                            const T site_width, const T row_height,
+                           const RowGrid<T>& rows, 
                            int num_bins_x, int num_bins_y, const int num_nodes,
                            const int num_movable_nodes) {
   // adjust bin sizes
   T bin_size_x = (xh - xl) / num_bins_x;
   T bin_size_y = row_height;
   // num_bins_x = ceilDiv(xh - xl, bin_size_x);
-  num_bins_y = ceilDiv(yh - yl, bin_size_y);
+  // One bin per physical row: ceilDiv(yh-yl, row_height) on a uniform core, exactly as before.
+  num_bins_y = rows.num_rows_incl_partial();
 
   // include both movable and fixed nodes
   std::vector<std::vector<int> > bin_cells(num_bins_x * num_bins_y);
   // distribute cells to bins
   distributeMovableAndFixedCells2BinsCPU(
       x, y, node_size_x, node_size_y, bin_size_x, bin_size_y, xl, yl, xh, yh,
-      site_width, num_bins_x, num_bins_y, num_nodes, num_movable_nodes, bin_cells);
+      site_width, rows, num_bins_x, num_bins_y, num_nodes, num_movable_nodes, bin_cells);
 
   std::vector<std::vector<AbacusCluster<T> > > bin_clusters(num_bins_x *
                                                             num_bins_y);
@@ -400,7 +428,7 @@ void abacusLegalizationCPU(const T* init_x, const T* init_y,
   }
 
   abacusLegalizeRowCPU(init_x, node_size_x, node_size_y, node_weights, x, y, 
-      xl, xh, yl, yh, site_width, bin_size_x, bin_size_y, 
+      xl, xh, yl, yh, site_width, bin_size_x, bin_size_y, rows, 
       num_bins_x, num_bins_y, num_nodes, num_movable_nodes, 
       bin_cells, bin_clusters);
   // need to align nodes to sites

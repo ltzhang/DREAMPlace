@@ -39,12 +39,11 @@ DREAMPLACE_BEGIN_NAMESPACE
 /// [num_nodes-num_filler_nodes, num_nodes)
 template <typename T>
 int greedyLegalizationLauncher(LegalizationDB<T> db) {
-  greedyLegalizationCPU(db, db.init_x, db.init_y, db.node_size_x,
-                        db.node_size_y, db.x, db.y, db.xl, db.yl, db.xh, db.yh,
-                        db.site_width, db.row_height, db.num_bins_x,
-                        db.num_bins_y, db.num_nodes, db.num_movable_nodes);
-
-  return 0;
+  return greedyLegalizationCPU(db, db.init_x, db.init_y, db.node_size_x,
+                               db.node_size_y, db.x, db.y, db.xl, db.yl, db.xh,
+                               db.yh, db.site_width, db.row_height,
+                               db.num_bins_x, db.num_bins_y, db.num_nodes,
+                               db.num_movable_nodes);
 }
 
 /// @brief legalize layout with greedy legalization.
@@ -83,12 +82,13 @@ at::Tensor greedy_legalization_forward(
     at::Tensor node2fence_region_map, double xl, double yl, double xh,
     double yh, double site_width, double row_height, int num_bins_x,
     int num_bins_y, int num_movable_nodes, int num_terminal_NIs,
-    int num_filler_nodes) {
+    int num_filler_nodes, at::Tensor row_yl, at::Tensor row_h) {
   CHECK_FLAT_CPU(init_pos);
   CHECK_EVEN(init_pos);
   CHECK_CONTIGUOUS(init_pos);
 
   auto pos_copy = pos.clone();
+  int unfittable = 0;
 
   CPUTimer::hr_clock_rep timer_start, timer_stop;
   timer_start = CPUTimer::getGlobaltime();
@@ -99,13 +99,20 @@ at::Tensor greedy_legalization_forward(
             init_pos, pos_copy, node_size_x, node_size_y, node_weights,
             flat_region_boxes, flat_region_boxes_start, node2fence_region_map,
             xl, yl, xh, yh, site_width, row_height, num_bins_x, num_bins_y,
-            num_movable_nodes, num_terminal_NIs, num_filler_nodes);
-        greedyLegalizationLauncher<scalar_t>(db);
+            num_movable_nodes, num_terminal_NIs, num_filler_nodes, row_yl,
+            row_h);
+        unfittable = greedyLegalizationLauncher<scalar_t>(db);
         // db.check_legality();
       });
   timer_stop = CPUTimer::getGlobaltime();
   dreamplacePrint(kINFO, "Greedy legalization takes %g ms\n",
                   (timer_stop - timer_start) * CPUTimer::getTimerPeriod());
+
+  // A cell that fits no row of this core cannot be legalized. Reject loudly rather than hand back a
+  // placement that merely looks plausible: the caller must see this as a failure, not as a result.
+  // A raised error (not an abort) lets the embedding flow report it and fall back deliberately.
+  TORCH_CHECK(unfittable == 0, "greedy legalization: ", unfittable,
+              " movable cell(s) have a height that fits no placement row of this core");
 
   return pos_copy;
 }

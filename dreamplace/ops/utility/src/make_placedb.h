@@ -6,6 +6,8 @@
 #ifndef _DREAMPLACE_UTILITY_DETAILEDPLACEDBUTILS_H
 #define _DREAMPLACE_UTILITY_DETAILEDPLACEDBUTILS_H
 
+#include "utility/src/row_grid_torch.h"
+
 DREAMPLACE_BEGIN_NAMESPACE
 
 template <typename>
@@ -145,6 +147,9 @@ DetailedPlaceDB<T> make_placedb(
 /// range of [0, num_movable_nodes)
 /// @param number of filler nodes, filler nodes are in the range of
 /// [num_nodes-num_filler_nodes, num_nodes)
+/// @param row_yl bottom edge of each physical placement row; EMPTY on a single-height core, where
+/// row_height alone describes the grid exactly
+/// @param row_h height of each physical placement row, same length as row_yl
 template <typename T>
 LegalizationDB<T> make_placedb(
     at::Tensor init_pos, at::Tensor pos, at::Tensor node_size_x,
@@ -153,7 +158,8 @@ LegalizationDB<T> make_placedb(
     at::Tensor node2fence_region_map, double xl, double yl, double xh,
     double yh, double site_width, double row_height, int num_bins_x,
     int num_bins_y, int num_movable_nodes, int num_terminal_NIs,
-    int num_filler_nodes) {
+    int num_filler_nodes, at::Tensor row_yl = at::Tensor(),
+    at::Tensor row_h = at::Tensor()) {
   LegalizationDB<T> db;
   int num_nodes = init_pos.numel() / 2;
 
@@ -181,6 +187,9 @@ LegalizationDB<T> make_placedb(
   db.num_bins_y = num_bins_y;
   db.num_sites_x = std::round((xh - xl) / site_width);
   db.num_sites_y = std::round((yh - yl) / row_height);
+  db.rows = (row_yl.defined() && row_h.defined())
+                ? make_row_grid_from_tensors<T>(yl, yh, row_height, row_yl, row_h)
+                : make_uniform_row_grid((T)yl, (T)yh, (T)row_height);
   // ignore fillers and terminal_NIs
   db.num_nodes = num_nodes - num_filler_nodes - num_terminal_NIs;
   db.num_movable_nodes = num_movable_nodes;

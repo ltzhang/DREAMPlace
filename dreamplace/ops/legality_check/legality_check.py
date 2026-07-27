@@ -22,7 +22,7 @@ class LegalityCheck(object):
     def __init__(self, node_size_x, node_size_y, flat_region_boxes,
                  flat_region_boxes_start, node2fence_region_map, xl, yl, xh,
                  yh, site_width, row_height, scale_factor, num_terminals,
-                 num_movable_nodes):
+                 num_movable_nodes, row_yl=None, row_h=None):
         super(LegalityCheck, self).__init__()
         self.node_size_x = node_size_x.cpu()
         self.node_size_y = node_size_y.cpu()
@@ -43,6 +43,13 @@ class LegalityCheck(object):
         self.scale_factor = scale_factor
         self.num_terminals = num_terminals
         self.num_movable_nodes = num_movable_nodes
+        # Physical placement rows. EMPTY on a single-height core, where `row_height` alone describes
+        # the grid exactly and the row-alignment test stays the original modulo-pitch test. On a
+        # MIXED core the modulo test is not merely imprecise, it is wrong: it certifies cells that
+        # sit on no real row at all, so the check then requires a cell to sit on a row's bottom edge
+        # AND to be exactly tiled by that row.
+        self.row_yl = row_yl.cpu() if row_yl is not None else torch.empty(0, dtype=self.node_size_x.dtype)
+        self.row_h = row_h.cpu() if row_h is not None else torch.empty(0, dtype=self.node_size_x.dtype)
 
     def __call__(self, pos):
         return self.forward(pos)
@@ -60,4 +67,4 @@ class LegalityCheck(object):
             self.flat_region_boxes, self.flat_region_boxes_start,
             self.node2fence_region_map, self.xl, self.yl, self.xh, self.yh,
             self.site_width, self.row_height, self.scale_factor,
-            self.num_terminals, self.num_movable_nodes)
+            self.num_terminals, self.num_movable_nodes, self.row_yl, self.row_h)

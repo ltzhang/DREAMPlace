@@ -4,6 +4,7 @@
  * @date   Jan 2020
  */
 #include "legality_check/src/legality_check.h"
+#include "utility/src/row_grid_torch.h"
 #include "utility/src/torch.h"
 
 DREAMPLACE_BEGIN_NAMESPACE
@@ -14,7 +15,8 @@ bool legality_check_forward(
     at::Tensor flat_region_boxes, at::Tensor flat_region_boxes_start,
     at::Tensor node2fence_region_map, double xl, double yl, double xh,
     double yh, double site_width, double row_height, double scale_factor,
-    const int num_fixed_nodes, const int num_movable_nodes) {
+    const int num_fixed_nodes, const int num_movable_nodes,
+    at::Tensor row_yl, at::Tensor row_h) {
   CHECK_FLAT_CPU(pos);
   CHECK_EVEN(pos);
   CHECK_CONTIGUOUS(pos);
@@ -33,7 +35,9 @@ bool legality_check_forward(
         DREAMPLACE_TENSOR_DATA_PTR(node_size_y, scalar_t),
         DREAMPLACE_TENSOR_DATA_PTR(flat_region_boxes, scalar_t),
         DREAMPLACE_TENSOR_DATA_PTR(flat_region_boxes_start, int),
-        DREAMPLACE_TENSOR_DATA_PTR(node2fence_region_map, int), xl, yl, xh, yh,
+        DREAMPLACE_TENSOR_DATA_PTR(node2fence_region_map, int),
+        make_row_grid_from_tensors<scalar_t>(yl, yh, row_height, row_yl, row_h),
+        xl, yl, xh, yh,
         site_width, row_height, scale_factor,
         num_movable_nodes + num_fixed_nodes,  ///< movable and fixed cells
         num_movable_nodes, flat_region_boxes_start.numel() - 1);

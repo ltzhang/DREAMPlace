@@ -17,11 +17,13 @@ void legalizeBinCPU(
         int num_bins_x, int num_bins_y, int blank_num_bins_y, 
         T bin_size_x, T bin_size_y, T blank_bin_size_y, 
         T site_width, T row_height, 
+        const RowGrid<T>& rows, 
         T xl, T yl, T xh, T yh,
         T alpha, // a parameter to tune anchor initial locations and current locations 
         T beta, // a parameter to tune space reserving 
         bool lr_flag, // from left to right 
-        int* num_unplaced_cells 
+        int* num_unplaced_cells, 
+        int* num_unfittable_cells 
         ) 
 {
     for (int i = 0; i < num_bins_x*num_bins_y; i += 1) 
@@ -30,9 +32,20 @@ void legalizeBinCPU(
         //T total_displace = 0; 
         int bin_id_x = i/num_bins_y; 
         int bin_id_y = i-bin_id_x*num_bins_y; 
-        int blank_num_bins_per_bin = roundDiv(bin_size_y, blank_bin_size_y);
-        int blank_bin_id_yl = bin_id_y*blank_num_bins_per_bin;
-        int blank_bin_id_yh = std::min(blank_bin_id_yl+blank_num_bins_per_bin, blank_num_bins_y);
+        // A blank bin is one physical ROW; see distributeBlanks2BinsCPU. On a mixed-height core the
+        // rows are not a constant pitch, so the bin's row span comes from the row table.
+        int blank_bin_id_yl, blank_bin_id_yh; 
+        if (rows.uniform())
+        {
+            int blank_num_bins_per_bin = roundDiv(bin_size_y, blank_bin_size_y);
+            blank_bin_id_yl = bin_id_y*blank_num_bins_per_bin;
+            blank_bin_id_yh = std::min(blank_bin_id_yl+blank_num_bins_per_bin, blank_num_bins_y);
+        }
+        else
+        {
+            blank_bin_id_yl = std::max(rows.row_index_floor(yl + bin_id_y*bin_size_y), 0);
+            blank_bin_id_yh = std::min(rows.row_index_ceil(std::min(yl + (bin_id_y+1)*bin_size_y, yh)), blank_num_bins_y);
+        }
 
         // cells in this bin 
         std::vector<int>& cells = bin_cells.at(i);
@@ -61,23 +74,43 @@ void legalizeBinCPU(
             T height = node_size_y[node_id];
 
 
-            int num_node_rows = ceilDiv(height, row_height); // may take multiple rows 
-            int blank_index_offset[num_node_rows]; 
-            std::fill(blank_index_offset, blank_index_offset+num_node_rows, 0);
+            // Upper bound on the rows this cell can occupy, for sizing the scratch arrays. On a
+            // uniform core this IS the row count (ceilDiv(height, row_height), unchanged); on a
+            // mixed core the true count depends on WHICH row the cell sits in, and is resolved per
+            // candidate row below -- a 9-track cell fits a 9-track row as one row and fits no run
+            // of 7-track rows at all.
+            const int max_node_rows = rows.max_rows_spanned(height); 
+            int num_node_rows = rows.uniform() ? max_node_rows : 0; 
+            int blank_index_offset[max_node_rows]; 
+            std::fill(blank_index_offset, blank_index_offset+max_node_rows, 0);
 
-            int blank_initial_bin_id_y = floorDiv((init_yl-yl), blank_bin_size_y);
+            int blank_initial_bin_id_y = rows.uniform() 
+                ? (int)floorDiv((init_yl-yl), blank_bin_size_y) 
+                : rows.row_index_floor(init_yl);
             blank_initial_bin_id_y = std::min(blank_bin_id_yh-1, std::max(blank_bin_id_yl, blank_initial_bin_id_y));
             int blank_bin_id_dist_y = std::max(blank_initial_bin_id_y+1, blank_bin_id_yh-blank_initial_bin_id_y); 
 
             int best_blank_bin_id_y = -1;
-            int best_blank_bi[num_node_rows]; 
-            std::fill(best_blank_bi, best_blank_bi+num_node_rows, -1); 
+            int best_num_node_rows = 0; 
+            int best_blank_bi[max_node_rows]; 
+            std::fill(best_blank_bi, best_blank_bi+max_node_rows, -1); 
             T best_cost = xh-xl+yh-yl; 
             T best_xl = -1; 
             T best_yl = -1; 
             for (int bin_id_offset_y = 0; abs(bin_id_offset_y) < blank_bin_id_dist_y; bin_id_offset_y = (bin_id_offset_y > 0)? -bin_id_offset_y : -(bin_id_offset_y-1))
             {
                 int blank_bin_id_y = blank_initial_bin_id_y+bin_id_offset_y;
+                if (!rows.uniform())
+                {
+                    // MIXED core: this row is a candidate only if the cell's height is tiled
+                    // EXACTLY by a contiguous run of rows starting here. A 9-track cell offered a
+                    // 7-track row gets -1 and the row is skipped -- it is never rounded into it.
+                    num_node_rows = rows.rows_spanned(blank_bin_id_y, height); 
+                    if (num_node_rows < 1) 
+                    {
+                        continue; 
+                    }
+                }
                 if (blank_bin_id_y < blank_bin_id_yl || blank_bin_id_y+num_node_rows > blank_bin_id_yh)
                 {
                     continue; 
@@ -90,8 +123,8 @@ void legalizeBinCPU(
                 // blanks in this bin 
                 const std::vector<Blank<T> >& blanks = bin_blanks.at(blank_bin_id);
 
-                int row_best_blank_bi[num_node_rows]; 
-                std::fill(row_best_blank_bi, row_best_blank_bi+num_node_rows, -1); 
+                int row_best_blank_bi[max_node_rows]; 
+                std::fill(row_best_blank_bi, row_best_blank_bi+max_node_rows, -1); 
                 T row_best_cost = xh-xl+yh-yl;
                 T row_best_xl = -1; 
                 T row_best_yl = -1; 
@@ -175,6 +208,7 @@ void legalizeBinCPU(
                 if (row_best_cost < best_cost)
                 {
                     best_blank_bin_id_y = blank_bin_id_y; 
+                    best_num_node_rows = num_node_rows; 
                     std::copy(row_best_blank_bi, row_best_blank_bi+num_node_rows, best_blank_bi);
                     best_cost = row_best_cost; 
                     best_xl = row_best_xl; 
@@ -186,9 +220,26 @@ void legalizeBinCPU(
                 }
             }
 
+            // A movable cell whose height matches NO row of this core cannot be legalized at all.
+            // Count it so the caller fails LOUDLY: dropping it wherever it happens to sit would be
+            // a plausible-looking placement whose power rails do not line up with any row.
+            if (best_blank_bin_id_y < 0 && !rows.uniform() && rows.rows_spanned(
+                    std::max(0, std::min(blank_initial_bin_id_y, blank_num_bins_y-1)), height) < 1)
+            {
+                bool fits_any = false; 
+                for (int r = blank_bin_id_yl; r < blank_bin_id_yh && !fits_any; ++r)
+                {
+                    fits_any = (rows.rows_spanned(r, height) >= 1); 
+                }
+                if (!fits_any)
+                {
+                    *num_unfittable_cells += 1; 
+                }
+            }
             // found blank  
             if (best_blank_bin_id_y >= 0)
             {
+                num_node_rows = best_num_node_rows; 
                 x[node_id] = best_xl; 
                 y[node_id] = best_yl; 
                 // update cell position and blank 
@@ -206,7 +257,7 @@ void legalizeBinCPU(
                     // whose row_height/site_width is non-integer, e.g. gt2n's 24/7), best_yl and
                     // row_height*row_offset accumulate float32 rounding, so an exactly-aligned row fails
                     // `==` and aborts a legal placement. Tolerance is relative to the row pitch.
-                    dreamplaceAssert(std::abs(best_yl+row_height*row_offset - blank.yl) <= 1e-3*row_height);
+                    dreamplaceAssert(std::abs(rows.row_bottom(best_blank_bin_id_y+row_offset) - blank.yl) <= 1e-3*rows.height);
                     if (best_xl == blank.xl)
                     {
                         // update blank 
@@ -270,11 +321,13 @@ void instantiateLegalizeBinCPU(
         int num_bins_x, int num_bins_y, int blank_num_bins_y, 
         float bin_size_x, float bin_size_y, float blank_bin_size_y, 
         float site_width, float row_height, 
+        const RowGrid<float>& rows, 
         float xl, float yl, float xh, float yh,
         float alpha, // a parameter to tune anchor initial locations and current locations 
         float beta, // a parameter to tune space reserving 
         bool lr_flag, // from left to right 
-        int* num_unplaced_cells 
+        int* num_unplaced_cells, 
+        int* num_unfittable_cells 
         ) 
 {
     legalizeBinCPU(
@@ -286,11 +339,13 @@ void instantiateLegalizeBinCPU(
             num_bins_x, num_bins_y, blank_num_bins_y, 
             bin_size_x, bin_size_y, blank_bin_size_y, 
             site_width, row_height, 
+            rows, 
             xl, yl, xh, yh,
             alpha, 
             beta, 
             lr_flag,  
-            num_unplaced_cells 
+            num_unplaced_cells, 
+            num_unfittable_cells 
             );
 }
 
@@ -303,11 +358,13 @@ void instantiateLegalizeBinCPU(
         int num_bins_x, int num_bins_y, int blank_num_bins_y, 
         double bin_size_x, double bin_size_y, double blank_bin_size_y, 
         double site_width, double row_height, 
+        const RowGrid<double>& rows, 
         double xl, double yl, double xh, double yh,
         double alpha, // a parameter to tune anchor initial locations and current locations 
         double beta, // a parameter to tune space reserving 
         bool lr_flag, // from left to right 
-        int* num_unplaced_cells 
+        int* num_unplaced_cells, 
+        int* num_unfittable_cells 
         ) 
 {
     legalizeBinCPU(
@@ -319,11 +376,13 @@ void instantiateLegalizeBinCPU(
             num_bins_x, num_bins_y, blank_num_bins_y, 
             bin_size_x, bin_size_y, blank_bin_size_y, 
             site_width, row_height, 
+            rows, 
             xl, yl, xh, yh,
             alpha, 
             beta, 
             lr_flag, 
-            num_unplaced_cells 
+            num_unplaced_cells, 
+            num_unfittable_cells 
             );
 }
 

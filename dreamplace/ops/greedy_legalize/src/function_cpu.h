@@ -29,12 +29,12 @@ void legalizeBinCPU(
     std::vector<std::vector<int> >& bin_cells,  // unplaced cells in each bin
     T* x, T* y, int num_bins_x, int num_bins_y, int blank_num_bins_y,
     T bin_size_x, T bin_size_y, T blank_bin_size_y, T site_width, T row_height,
-    T xl, T yl, T xh, T yh,
+    const RowGrid<T>& rows, T xl, T yl, T xh, T yh,
     T alpha,       // a parameter to tune anchor initial locations and current
                    // locations
     T beta,        // a parameter to tune space reserving
     bool lr_flag,  // from left to right
-    int* num_unplaced_cells);
+    int* num_unplaced_cells, int* num_unfittable_cells);
 
 template <typename T>
 int greedyLegalizationCPU(const LegalizationDB<T>& db, const T* init_x,

@@ -29,6 +29,7 @@ int greedyLegalizationCPU(
         )
 {
     float milliseconds = 0; 
+    int unfittable_cells = 0; 
 
     // first from right to left 
     // then from left to right 
@@ -46,8 +47,11 @@ int greedyLegalizationCPU(
         num_bins_y = ceilDiv((yh-yl), bin_size_y);
 
         // bin dimension in y direction for blanks is different from that for cells 
+        // One blank bin per physical ROW. On a uniform core that is floorDiv((yh-yl), row_height)
+        // exactly as before; on a mixed core it is the length of the real row table, because the
+        // rows are not a constant pitch and a uniform ladder would name strips that are not rows.
         T blank_bin_size_y = row_height; 
-        int blank_num_bins_y = floorDiv((yh-yl), blank_bin_size_y); 
+        int blank_num_bins_y = db.rows.num_rows(); 
         dreamplacePrint(kDEBUG, "%s blank_num_bins_y = %d\n", "Standard cell legalization", blank_num_bins_y);
 
         // allocate bin cells 
@@ -93,10 +97,15 @@ int greedyLegalizationCPU(
                 bin_fixed_cells, 
                 bin_size_x, bin_size_y, blank_bin_size_y, 
                 xl, yl, xh, yh, 
-                site_width, row_height, 
+                site_width, row_height, db.rows, 
                 num_bins_x, num_bins_y, blank_num_bins_y, 
                 bin_blanks
                 ); 
+
+        // Movable cells whose height matches no row of this core at all. Legalization cannot place
+        // them anywhere legal, and putting them "close enough" is exactly the silent miscompile
+        // this model exists to prevent -- so they are reported and the caller fails loudly.
+        int num_unfittable_cells_host = 0; 
 
         int num_unplaced_cells_host;
         // minimum width in sites 
@@ -120,11 +129,13 @@ int greedyLegalizationCPU(
                     num_bins_x, num_bins_y, blank_num_bins_y, 
                     bin_size_x, bin_size_y, blank_bin_size_y, 
                     site_width, row_height, 
+                    db.rows, 
                     xl, yl, xh, yh,
                     0.5, 
                     4.0, 
                     i%2,  
-                    &num_unplaced_cells_host
+                    &num_unplaced_cells_host, 
+                    &num_unfittable_cells_host
                     );
             milliseconds = (clock()-milliseconds)/CLOCKS_PER_SEC*1000; 
             dreamplacePrint(kINFO, "%s legalizeBin takes %.3f ms\n", "Standard cell legalization", milliseconds);
@@ -198,9 +209,19 @@ int greedyLegalizationCPU(
             std::swap(bin_cells, bin_cells_copy); 
             std::swap(bin_blanks, bin_blanks_copy); 
         }
+        unfittable_cells = std::max(unfittable_cells, num_unfittable_cells_host); 
     }
 
-    return 0; 
+    if (unfittable_cells > 0)
+    {
+        dreamplacePrint(kERROR, 
+                "%s: %d movable cell(s) have a height that matches no placement row of this core. "
+                "This core interleaves %d row heights (%g..%g); a cell may only occupy a run of rows "
+                "summing exactly to its own height. Refusing to place them somewhere plausible.\n", 
+                "Standard cell legalization", unfittable_cells, 
+                db.rows.uniform() ? 1 : 2, (double)db.rows.height, (double)db.rows.max_height); 
+    }
+    return unfittable_cells; 
 }
 
 int instantiateGreedyLegalizationCPU(

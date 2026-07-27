@@ -204,9 +204,18 @@ def _build_placedb_from_arrays(arrays, params):
     db.xl, db.xh, db.yl, db.yh = lx, hx, ly, hy
     db.row_height = row_h
     db.site_width = site_w
-    nrows = max(1, int(round((hy - ly) / row_h)))
-    db.rows = np.array([[lx, ly + r * row_h, hx, ly + (r + 1) * row_h] for r in range(nrows)],
-                       dtype=np.float32)
+    # The caller's real ROW rectangles when it has them. That matters on a core interleaving two
+    # standard-cell row heights, where no single `row_h` describes the rows and a synthesized
+    # uniform ladder would name strips that are not rows at all. PlaceDB.derive_placement_rows()
+    # turns these into the per-row table; a single-height core still comes out UNIFORM, so nothing
+    # downstream changes. Absent `row_info`, keep the historical synthesized ladder.
+    rows_in = np.asarray(arrays.get("row_info") or [], np.float32).reshape(-1, 4)
+    if rows_in.shape[0] > 0:
+        db.rows = np.ascontiguousarray(rows_in)
+    else:
+        nrows = max(1, int(round((hy - ly) / row_h)))
+        db.rows = np.array([[lx, ly + r * row_h, hx, ly + (r + 1) * row_h] for r in range(nrows)],
+                           dtype=np.float32)
     db.total_space_area = float((hx - lx) * (hy - ly))
 
     # No fence regions: one implicit region = the whole die.

@@ -11,6 +11,7 @@ import re
 import math
 import time
 import numpy as np
+import PlaceRows
 import torch
 import logging
 import Params
@@ -83,6 +84,14 @@ class PlaceDB (object):
 
         self.row_height = None
         self.site_width = None
+
+        # Physical placement rows, derived from `self.rows` by derive_placement_rows(). Both stay
+        # None on a single-height core -- the scalar `row_height` describes that grid exactly and
+        # every legalizer keeps its original arithmetic. They are populated only when the core
+        # interleaves two or more standard-cell row heights.
+        self.row_yl = None
+        self.row_h = None
+        self.mixed_row_heights = False
 
         self.bin_size_x = None
         self.bin_size_y = None
@@ -749,6 +758,54 @@ class PlaceDB (object):
             np.sum(fence_region_mask.astype(np.float32)),
         )
 
+    def derive_placement_rows(self):
+        """Derive the per-row (bottom edge, height) table from the DEF ROW rectangles.
+
+        `self.rows` is one rectangle per DEF ROW record. On the overwhelming majority of designs
+        every row has the same height, and the table is UNIFORM: `self.row_yl` / `self.row_h` stay
+        None, every op keeps its scalar `row_height`, and no code path changes.
+
+        A core that interleaves two standard-cell row heights (a PDK mixing 7-track and 9-track
+        cells) cannot be described by one scalar at all -- a 9-track cell is 1.29 shortest-rows, so
+        the legalizers offer it rows it physically cannot occupy. There the table is MIXED and is
+        handed to the legalizers, which then admit a cell only into a run of rows summing exactly to
+        its height.
+
+        A core whose ROW records do not describe a consistent tiling AND that shows more than one
+        row height is REJECTED outright: falling back to the uniform grid there would silently
+        misplace every taller cell, which is worse than refusing.
+        """
+        self.row_yl = None
+        self.row_h = None
+        self.mixed_row_heights = False
+        if self.rows is None or len(self.rows) == 0:
+            return
+        records = [(float(r[1]), float(r[3]) - float(r[1])) for r in self.rows]
+        heights = set()
+        for (_, h) in records:
+            heights.add(round(h, 6))
+        table = PlaceRows.derive_placement_rows(records)
+        if table.rejected:
+            if len(heights) > 1:
+                raise RuntimeError(
+                    "the floorplan has %d distinct row heights but its ROW records do not describe "
+                    "a consistent tiling (%s). Refusing to legalize on a uniform row grid, which "
+                    "would place every taller cell on no real row." % (len(heights), table.message))
+            logging.warning("placement rows rejected (%s); keeping the uniform row grid",
+                            table.message)
+            return
+        if not table.mixed:
+            return
+        self.row_yl = np.array(table.row_yl, dtype=self.dtype)
+        self.row_h = np.array(table.row_h, dtype=self.dtype)
+        self.mixed_row_heights = True
+        logging.info(
+            "mixed row heights: %d DEF ROW records collapse to %d placement rows, heights %s "
+            "(scalar row_height = %g)",
+            len(records), len(table.row_yl),
+            "/".join("%g" % h for h in sorted(set(round(h, 6) for h in table.row_h))),
+            self.row_height)
+
     def initialize(self, params):
         """
         @brief initialize data members after reading
@@ -765,6 +822,10 @@ class PlaceDB (object):
             params.scale_factor = 1.0 / self.site_width
         logging.info("set scale_factor = %g, as site_width = %g" % (params.scale_factor, self.site_width))
         self.scale(params.shift_factor, params.scale_factor)
+
+        # Derive the physical placement rows from the (now scaled) ROW rectangles. On a
+        # single-height core this is UNIFORM and nothing downstream changes.
+        self.derive_placement_rows()
 
         content = """
 ================================= Benchmark Statistics =================================

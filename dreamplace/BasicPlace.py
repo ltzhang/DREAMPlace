@@ -639,6 +639,18 @@ class BasicPlace(nn.Module):
                 def_unit=placedb.rawdb.defUnit(),
                 ignore_net_degree=params.ignore_net_degree)     
 
+    def _row_table(self, placedb, data_collections):
+        """The physical placement rows as tensors, or (None, None) on a single-height core.
+
+        None means "keep the uniform row grid", which is what every op does with an empty table --
+        so a single-height design takes exactly the code path it took before this existed.
+        """
+        if not getattr(placedb, "mixed_row_heights", False):
+            return None, None
+        dtype = data_collections.node_size_x.dtype
+        return (torch.from_numpy(placedb.row_yl).to(dtype).cpu(),
+                torch.from_numpy(placedb.row_h).to(dtype).cpu())
+
     def build_legality_check(self, params, placedb, data_collections, device):
         """
         @brief legality check
@@ -647,6 +659,7 @@ class BasicPlace(nn.Module):
         @param data_collections a collection of all data and variables required for constructing the ops
         @param device cpu or cuda
         """
+        row_yl, row_h = self._row_table(placedb, data_collections)
         return legality_check.LegalityCheck(
             node_size_x=data_collections.node_size_x,
             node_size_y=data_collections.node_size_y,
@@ -661,7 +674,9 @@ class BasicPlace(nn.Module):
             row_height=placedb.row_height,
             scale_factor=params.scale_factor,
             num_terminals=placedb.num_terminals,
-            num_movable_nodes=placedb.num_movable_nodes)
+            num_movable_nodes=placedb.num_movable_nodes,
+            row_yl=row_yl,
+            row_h=row_h)
 
     def build_macro_legalization(self, params, placedb, data_collections, device):
         """
@@ -705,6 +720,8 @@ class BasicPlace(nn.Module):
         @param data_collections a collection of all data and variables required for constructing the ops
         @param device cpu or cuda
         """
+        row_yl, row_h = self._row_table(placedb, data_collections)
+        mixed_rows = row_yl is not None
         # for movable macro legalization
         # the number of bins control the search granularity
         ml = macro_legalize.MacroLegalize(
@@ -746,7 +763,9 @@ class BasicPlace(nn.Module):
             #num_bins_x=64, num_bins_y=64,
             num_movable_nodes=placedb.num_movable_nodes,
             num_terminal_NIs=placedb.num_terminal_NIs,
-            num_filler_nodes=placedb.num_filler_nodes)
+            num_filler_nodes=placedb.num_filler_nodes,
+            row_yl=row_yl,
+            row_h=row_h)
         # for standard cell legalization
         al = abacus_legalize.AbacusLegalize(
             node_size_x=data_collections.node_size_x,
@@ -766,11 +785,29 @@ class BasicPlace(nn.Module):
             #num_bins_x=64, num_bins_y=64,
             num_movable_nodes=placedb.num_movable_nodes,
             num_terminal_NIs=placedb.num_terminal_NIs,
-            num_filler_nodes=placedb.num_filler_nodes)
+            num_filler_nodes=placedb.num_filler_nodes,
+            row_yl=row_yl,
+            row_h=row_h)
 
         def build_legalization_op(pos):
             logging.info("Start legalization")
-            pos1 = ml(pos, pos)
+            if mixed_rows:
+                # Macro legalization rounds every movable macro's height UP to a whole number of
+                # scalar rows (ceilDiv(height, row_height) * row_height), which is not a row count
+                # at all on a core interleaving two row heights. Decline it loudly instead of
+                # letting it move macros onto rows that do not exist. Standard-cell legalization
+                # below is row-aware and still runs.
+                num_movable_macros = int((
+                    placedb.node_size_y[:placedb.num_movable_nodes] > placedb.row_height * 2).sum())
+                if num_movable_macros > 0:
+                    raise RuntimeError(
+                        "macro legalization does not model a mixed row-height core, and this design "
+                        "has %d movable macro(s). Refusing to legalize them against a uniform row "
+                        "grid." % num_movable_macros)
+                logging.info("mixed row heights: skipping macro legalization (no movable macros)")
+                pos1 = pos
+            else:
+                pos1 = ml(pos, pos)
             pos2 = gl(pos1, pos1)
             legal = self.op_collections.legality_check_op(pos2)
             if not legal:
@@ -897,6 +934,7 @@ class BasicPlace(nn.Module):
             num_terminal_NIs=placedb.num_terminal_NIs,
             num_filler_nodes=num_filler_nodes_fence_region)
 
+        fr_row_yl, fr_row_h = self._row_table(placedb, data_collections)
         gl = greedy_legalize.GreedyLegalize(
             node_size_x=node_size_x,
             node_size_y=node_size_y,
@@ -915,7 +953,9 @@ class BasicPlace(nn.Module):
             #num_bins_x=64, num_bins_y=64,
             num_movable_nodes=num_movable_nodes_fence_region,
             num_terminal_NIs=placedb.num_terminal_NIs,
-            num_filler_nodes=num_filler_nodes_fence_region)
+            num_filler_nodes=num_filler_nodes_fence_region,
+            row_yl=fr_row_yl,
+            row_h=fr_row_h)
         # for standard cell legalization
         al = abacus_legalize.AbacusLegalize(
             node_size_x=node_size_x,
@@ -934,7 +974,9 @@ class BasicPlace(nn.Module):
             num_bins_y=64,
             num_movable_nodes=num_movable_nodes_fence_region,
             num_terminal_NIs=placedb.num_terminal_NIs,
-            num_filler_nodes=num_filler_nodes_fence_region)
+            num_filler_nodes=num_filler_nodes_fence_region,
+            row_yl=fr_row_yl,
+            row_h=fr_row_h)
 
         def build_greedy_legalization_op(pos):
             ### reconstruct pos for fence region
@@ -1072,6 +1114,21 @@ class BasicPlace(nn.Module):
         # wirelength for position
         def build_detailed_placement_op(pos):
             logging.info("Start ABCDPlace for refinement")
+
+            if getattr(placedb, "mixed_row_heights", False):
+                # Every ABCDPlace kernel (K-Reorder, Independent-Set Matching, Global Swap) indexes
+                # cells by (y - yl) / row_height and reasons about ONE cell height: it treats
+                # anything taller than row_height as an immovable barrier and matches single-row
+                # cells by exact height equality. On a core interleaving two row heights that model
+                # is simply absent, and running it would shuffle 9-track cells through 7-track rows.
+                # Detailed placement is wirelength REFINEMENT, so declining it keeps the legalized
+                # placement intact -- a refused optimization is the right trade against a corrupt
+                # one. Declared loudly so the result is never mistaken for a refined placement.
+                logging.warning(
+                    "mixed row heights: declining detailed placement (K-Reorder / Independent-Set "
+                    "Matching / Global Swap are single-row-height kernels). The legalized "
+                    "placement is returned unrefined.")
+                return pos
 
             if placedb.num_movable_nodes < 2: 
                 logging.info("Too few movable cells, skip detailed placement")

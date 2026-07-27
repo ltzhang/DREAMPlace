@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include "legality_check/src/legality_check.h"
+#include "utility/src/row_grid.h"
 #include "utility/src/utils.h"
 
 DREAMPLACE_BEGIN_NAMESPACE
@@ -39,6 +40,11 @@ struct LegalizationDB {
   T bin_size_x;
   T bin_size_y;
 
+  /// @brief The physical placement rows. UNIFORM on a single-height core -- then `row_height` alone
+  /// describes the grid exactly and every legalizer keeps its original closed-form arithmetic.
+  /// MIXED only for a core interleaving two or more row heights (see utility/src/row_grid.h).
+  RowGrid<T> rows;
+
   int num_bins_x;
   int num_bins_y;
   int num_sites_x;
@@ -60,12 +66,9 @@ struct LegalizationDB {
     return (node_id < num_movable_nodes &&
             height > (row_height * DUMMY_FIXED_NUM_ROWS));
   }
-  /// @brief align cell to a row
-  inline T align2row(T y, T height) const {
-    T yy = std::max(std::min(y, yh - height), yl);
-    yy = floorDiv(yy - yl, row_height) * row_height + yl;
-    return yy;
-  }
+  /// @brief align cell to a row. On a uniform core this is literally the arithmetic it always was;
+  /// on a mixed core it snaps to a real row's bottom edge, which is not a multiple of any pitch.
+  inline T align2row(T y, T height) const { return rows.align_to_row(y, height); }
   /// @brief align cell to a site
   inline T align2site(T x, T width) const {
     T xx = std::max(std::min(x, xh - width), xl);
@@ -76,7 +79,7 @@ struct LegalizationDB {
   bool check_legality() const {
     return legalityCheckKernelCPU(
         x, y, node_size_x, node_size_y, flat_region_boxes,
-        flat_region_boxes_start, node2fence_region_map, xl, yl, xh, yh,
+        flat_region_boxes_start, node2fence_region_map, rows, xl, yl, xh, yh,
         site_width, row_height, num_nodes, num_movable_nodes, num_regions);
   }
 };

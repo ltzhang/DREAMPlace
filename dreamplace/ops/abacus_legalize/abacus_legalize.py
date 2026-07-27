@@ -35,7 +35,9 @@ class AbacusLegalizeFunction(Function):
         num_bins_y,
         num_movable_nodes,
         num_terminal_NIs,
-        num_filler_nodes
+        num_filler_nodes,
+        row_yl,
+        row_h
     ):
         if pos.is_cuda:
             output = abacus_legalize_cpp.forward(
@@ -57,7 +59,9 @@ class AbacusLegalizeFunction(Function):
                 num_bins_y,
                 num_movable_nodes,
                 num_terminal_NIs,
-                num_filler_nodes
+                num_filler_nodes,
+                row_yl,
+                row_h
             ).cuda()
         else:
             output = abacus_legalize_cpp.forward(
@@ -79,7 +83,9 @@ class AbacusLegalizeFunction(Function):
                 num_bins_y,
                 num_movable_nodes,
                 num_terminal_NIs,
-                num_filler_nodes
+                num_filler_nodes,
+                row_yl,
+                row_h
             )
         return output
 
@@ -90,7 +96,8 @@ class AbacusLegalize(object):
 
     def __init__(self, node_size_x, node_size_y, node_weights,
                  flat_region_boxes, flat_region_boxes_start, node2fence_region_map,
-                 xl, yl, xh, yh, site_width, row_height, num_bins_x, num_bins_y, num_movable_nodes, num_terminal_NIs, num_filler_nodes):
+                 xl, yl, xh, yh, site_width, row_height, num_bins_x, num_bins_y, num_movable_nodes, num_terminal_NIs, num_filler_nodes,
+            row_yl=None, row_h=None):
         super(AbacusLegalize, self).__init__()
         self.node_size_x = node_size_x
         self.node_size_y = node_size_y
@@ -109,6 +116,10 @@ class AbacusLegalize(object):
         self.num_movable_nodes = num_movable_nodes
         self.num_terminal_NIs = num_terminal_NIs
         self.num_filler_nodes = num_filler_nodes
+        # Physical placement rows. EMPTY on a single-height core, where `row_height` alone describes
+        # the grid exactly and the legalizer keeps its original closed-form arithmetic.
+        self.row_yl = row_yl if row_yl is not None else torch.empty(0, dtype=node_size_x.dtype)
+        self.row_h = row_h if row_h is not None else torch.empty(0, dtype=node_size_x.dtype)
 
     def __call__(self, init_pos, pos):
         """ 
@@ -135,4 +146,6 @@ class AbacusLegalize(object):
             num_movable_nodes=self.num_movable_nodes,
             num_terminal_NIs=self.num_terminal_NIs,
             num_filler_nodes=self.num_filler_nodes,
+            row_yl=self.row_yl,
+            row_h=self.row_h,
         )
