@@ -1,9 +1,23 @@
 
 import torch
-from distutils.version import LooseVersion, StrictVersion
+# distutils was removed in Python 3.12; the only use here is comparing torch versions against
+# 1.8.0, which a numeric prefix tuple does without the dependency (the embedded interpreter has
+# no setuptools shim, so `import distutils` is a hard ModuleNotFoundError there — it silently
+# cost every wise-dreamplace flow of ORFS round 4 until the driver probe named it).
+def _version_tuple(v):
+    parts = []
+    for tok in str(v).split("+")[0].split("."):
+        num = ""
+        for ch in tok:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        parts.append(int(num) if num else 0)
+    return tuple(parts)
 
 def rfft(input, signal_ndim, normalized=False, onesided=True):
-    if LooseVersion(torch.__version__) < LooseVersion("1.8.0"): 
+    if _version_tuple(torch.__version__) < _version_tuple("1.8.0"): 
         return torch.rfft(input, signal_ndim, normalized, onesided)
     else:
         if onesided: 
@@ -48,7 +62,7 @@ def rfft(input, signal_ndim, normalized=False, onesided=True):
         return torch.view_as_real(y).contiguous()
 
 def irfft(input, signal_ndim, normalized=False, onesided=True, signal_sizes=None):
-    if LooseVersion(torch.__version__) < LooseVersion("1.8.0"): 
+    if _version_tuple(torch.__version__) < _version_tuple("1.8.0"): 
         return torch.irfft(input, signal_ndim, normalized, onesided, signal_sizes)
     else:
         assert signal_sizes, "Parameter signal_sizes is required"
@@ -94,7 +108,7 @@ def irfft(input, signal_ndim, normalized=False, onesided=True, signal_sizes=None
         return y.contiguous()
 
 def fft(input, signal_ndim, normalized=False):
-    if LooseVersion(torch.__version__) < LooseVersion("1.8.0"): 
+    if _version_tuple(torch.__version__) < _version_tuple("1.8.0"): 
         return torch.fft(input, signal_ndim, normalized)
     else:
         if normalized:
@@ -119,7 +133,7 @@ def fft(input, signal_ndim, normalized=False):
         return torch.view_as_real(y).contiguous()
 
 def ifft(input, signal_ndim, normalized=False):
-    if LooseVersion(torch.__version__) < LooseVersion("1.8.0"): 
+    if _version_tuple(torch.__version__) < _version_tuple("1.8.0"): 
         return torch.ifft(input, signal_ndim, normalized)
     else:
         if normalized:
