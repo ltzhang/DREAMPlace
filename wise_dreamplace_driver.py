@@ -41,6 +41,11 @@ def available():
         import Params, PlaceDB, NonLinearPlace  # noqa: F401  (bare-name inner modules resolve)
         return True
     except Exception:
+        # The C++ caller reports a generic "unavailable" and swallows this probe's exception —
+        # round 4 lost three D rows before the cause was even visible. Name it loudly (rule #7).
+        import traceback
+        print("wise_dreamplace_driver.available(): import failed —", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return False
 
 
