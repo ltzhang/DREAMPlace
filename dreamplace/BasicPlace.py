@@ -1167,29 +1167,39 @@ class BasicPlace(nn.Module):
                 logging.info("Deriving from system scale factor %g (1/%d)" % (params.scale_factor, inv_scale_factor))
                 logging.info("Use scale factor %g (1/%d) for detailed placement" % (scale_factor, target_inv_scale_factor))
 
-            for i in range(1):
-                pos1 = kr(pos1, scale_factor)
-                legal = self.op_collections.legality_check_op(pos1)
-                logging.info("K-Reorder legal flag = %d" % (legal))
+            # Each kernel is applied to the last position that PASSED the legality check, and a
+            # kernel whose output fails is DISCARDED. Previously every one of these steps did
+            # `pos1 = op(pos1); if not legal: return pos1`, i.e. on failure it returned the exact
+            # positions the checker had just rejected, and silently skipped the remaining kernels.
+            #
+            # That is not hypothetical. On an ORFS sweep (nangate45/ariane133) the sequence was:
+            # greedy legalization -> check OK, abacus -> check OK, ABCDPlace input -> check OK, then
+            # K-Reorder moved a standard cell INSIDE a fixed macro, the next check reported
+            #   [ERROR] row 562 ..., overlap node 275126 (a macro) with node 127764 (a std cell)
+            # and the run went straight to "writing placement" -- shipping the illegal result and
+            # skipping ISM, global swap and the second K-Reorder. Across that sweep 5 of 7 real-engine
+            # runs emitted legality errors, and the split was exactly macro-heavy vs macro-free.
+            #
+            # Returning the last legal position keeps detailed placement's improvements up to the
+            # failing kernel and never hands back output this module's own checker refused. The
+            # truncation is logged at ERROR: it is a real loss of DP quality and previously left no
+            # trace beyond the checker's own message.
+            last_legal = pos1
+            for name, op in (("K-Reorder", kr),
+                             ("Independent set matching", ism),
+                             ("Global swap", gs),
+                             ("K-Reorder", kr)):
+                candidate = op(last_legal, scale_factor)
+                legal = self.op_collections.legality_check_op(candidate)
+                logging.info("%s legal flag = %d" % (name, legal))
                 if not legal:
-                    return pos1
-                pos1 = ism(pos1, scale_factor)
-                legal = self.op_collections.legality_check_op(pos1)
-                logging.info("Independent set matching legal flag = %d" %
-                             (legal))
-                if not legal:
-                    return pos1
-                pos1 = gs(pos1, scale_factor)
-                legal = self.op_collections.legality_check_op(pos1)
-                logging.info("Global swap legal flag = %d" % (legal))
-                if not legal:
-                    return pos1
-                pos1 = kr(pos1, scale_factor)
-                legal = self.op_collections.legality_check_op(pos1)
-                logging.info("K-Reorder legal flag = %d" % (legal))
-                if not legal:
-                    return pos1
-            return pos1
+                    logging.error(
+                        "%s produced an ILLEGAL placement; discarding it and returning the last "
+                        "legal position. Detailed placement is TRUNCATED here, so the result is "
+                        "legal but of lower quality than a full DP pass." % name)
+                    return last_legal
+                last_legal = candidate
+            return last_legal
 
         return build_detailed_placement_op
 
