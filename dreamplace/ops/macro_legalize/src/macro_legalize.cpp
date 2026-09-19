@@ -431,8 +431,14 @@ bool macroLegalizationLauncher(LegalizationDB<T> db) {
   roughLegalizeLauncher(db, macros, fixed_macros, small_clusters_flag,
                         blocked_macros_flag);
 
-  // second round with LP
-  lpLegalizeGraphLauncher(db, macros, fixed_macros);
+  // second round with LP.  A declined LP (infeasible / non-optimal constraint
+  // graph, or a solution outside the placement region) leaves the rough
+  // legalization's coordinates in place; it is not a fatal condition.
+  if (!lpLegalizeGraphLauncher(db, macros, fixed_macros)) {
+    dreamplacePrint(kWARN,
+                    "constraint-graph macro LP declined; keeping the rough "
+                    "legalization result\n");
+  }
   auto displace = compute_displace(db, macros);
   dreamplacePrint(
       kINFO, "Macro displacement total %g, max %g, weighted total %g, max %g\n",
@@ -454,15 +460,20 @@ bool macroLegalizationLauncher(LegalizationDB<T> db) {
 
     // refine with LP if legal
     if (legal) {
-      lpLegalizeLauncher(db, macros, fixed_macros);
-      displace = compute_displace(db, macros);
-      dreamplacePrint(
-          kINFO,
-          "Macro displacement total %g, max %g, weighted total %g, max %g\n",
-          displace.total_displace, displace.max_displace,
-          displace.total_weighted_displace, displace.max_weighted_displace);
-      legal = check_macro_legality(db, macros, true);
-      update_best(legal, displace);
+      if (lpLegalizeLauncher(db, macros, fixed_macros)) {
+        displace = compute_displace(db, macros);
+        dreamplacePrint(
+            kINFO,
+            "Macro displacement total %g, max %g, weighted total %g, max %g\n",
+            displace.total_displace, displace.max_displace,
+            displace.total_weighted_displace, displace.max_weighted_displace);
+        legal = check_macro_legality(db, macros, true);
+        update_best(legal, displace);
+      } else {
+        dreamplacePrint(kWARN,
+                        "macro LP refinement declined; keeping the Hannan-grid "
+                        "legalization result\n");
+      }
     }
 
     // apply best solution

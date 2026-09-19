@@ -249,7 +249,10 @@ def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="
     position; fixed/IO rows echo their input position). Never raises across the boundary — any failure
     is reported in ["error"] with ok=False and no fabricated coordinates (rule #7).
     """
-    result = {"ok": False, "coords": [], "gp_hpwl": -1.0, "error": ""}
+    result = {"ok": False, "coords": [], "gp_hpwl": -1.0, "error": "",
+              "legal": None, "legalize_requested": False, "legalize_executed": False,
+              "detailed_requested": bool(detailed), "detailed_executed": False,
+              "detailed_truncated": False, "final_step": "", "device": "gpu" if gpu else "cpu"}
     prev_cwd = os.getcwd()
     outdir = None
     try:
@@ -298,6 +301,16 @@ def place_arrays(arrays, util=0.8, seed=1000, deterministic=True, gpu=0, timer="
             result["gp_hpwl"] = float(metrics[-1].hpwl) if metrics else -1.0
         except Exception:
             pass
+        # What the pipeline actually did, as structured data the caller can branch
+        # on: the engine's own legality verdict, and whether detailed placement
+        # ran, was declined or was truncated (contract rule 7).
+        record = getattr(placer, "placement_record", None)
+        if isinstance(record, dict):
+            for key in ("legal", "legalize_requested", "legalize_executed",
+                        "detailed_requested", "detailed_executed",
+                        "detailed_truncated", "final_step"):
+                if key in record:
+                    result[key] = record[key]
         result["ok"] = True
         return result
     except BaseException as e:  # never leak across the C++ boundary

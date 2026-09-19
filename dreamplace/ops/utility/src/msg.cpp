@@ -44,46 +44,106 @@ int dreamplaceVPrintStream(MessageType m, FILE* stream, const char* format,
   return ret;
 }
 
-int dreamplaceSPrint(MessageType m, char* buf, const char* format, ...) {
+int dreamplaceSPrintN(MessageType m, char* buf, std::size_t capacity,
+                      const char* format, ...) {
   va_list args;
   va_start(args, format);
-  int ret = dreamplaceVSPrint(m, buf, format, args);
+  int ret = dreamplaceVSPrintN(m, buf, capacity, format, args);
   va_end(args);
 
   return ret;
 }
 
-int dreamplaceVSPrint(MessageType m, char* buf, const char* format,
-                      va_list args) {
+int dreamplaceVSPrintN(MessageType m, char* buf, std::size_t capacity,
+                       const char* format, va_list args) {
+  if (buf == NULL || capacity == 0) {
+    return -1;
+  }
+  buf[0] = '\0';
+
   // print prefix
   char prefix[16];
-  dreamplaceSPrintPrefix(m, prefix);
-  sprintf(buf, "%s", prefix);
+  if (dreamplaceSPrintPrefixN(m, prefix, sizeof(prefix)) < 0) {
+    return -1;
+  }
+  int written = snprintf(buf, capacity, "%s", prefix);
+  if (written < 0) {
+    return -1;
+  }
+  std::size_t used = (std::size_t)written;
+  if (used >= capacity) {
+    fprintf(stderr,
+            "[ERROR  ] message buffer of %zu bytes truncated while writing the "
+            "prefix\n",
+            capacity);
+    return -1;
+  }
 
   // print message
-  int ret = vsprintf(buf + strlen(prefix), format, args);
+  int ret = vsnprintf(buf + used, capacity - used, format, args);
+  if (ret < 0) {
+    return -1;
+  }
+  if ((std::size_t)ret >= capacity - used) {
+    fprintf(stderr,
+            "[ERROR  ] message buffer of %zu bytes truncated: %d bytes were "
+            "needed\n",
+            capacity, (int)used + ret);
+  }
 
   return ret;
 }
 
-int dreamplaceSPrintPrefix(MessageType m, char* prefix) {
+int dreamplaceSPrintPrefixN(MessageType m, char* prefix,
+                            std::size_t capacity) {
+  if (prefix == NULL || capacity == 0) {
+    return -1;
+  }
+  const char* text = NULL;
   switch (m) {
     case kNONE:
-      return sprintf(prefix, "%c", '\0');
+      text = "";
+      break;
     case kINFO:
-      return sprintf(prefix, "[INFO   ] ");
+      text = "[INFO   ] ";
+      break;
     case kWARN:
-      return sprintf(prefix, "[WARNING] ");
+      text = "[WARNING] ";
+      break;
     case kERROR:
-      return sprintf(prefix, "[ERROR  ] ");
+      text = "[ERROR  ] ";
+      break;
     case kDEBUG:
-      return sprintf(prefix, "[DEBUG  ] ");
+      text = "[DEBUG  ] ";
+      break;
     case kASSERT:
-      return sprintf(prefix, "[ASSERT ] ");
+      text = "[ASSERT ] ";
+      break;
     default:
-      dreamplaceAssertMsg(0, "unknown message type");
+      prefix[0] = '\0';
+      fprintf(stderr, "[ERROR  ] unknown message type %d\n", (int)m);
+      return -1;
   }
-  return 0;
+  int written = snprintf(prefix, capacity, "%s", text);
+  if (written < 0 || (std::size_t)written >= capacity) {
+    prefix[0] = '\0';
+    return -1;
+  }
+  return written;
+}
+
+std::string dreamplaceAssertText(const char* expr, const char* fileName,
+                                 unsigned lineNum, const char* funcName,
+                                 const char* detail) {
+  char buf[1024];
+  if (detail != NULL) {
+    snprintf(buf, sizeof(buf), "%s:%u: %s: Assertion `%s' failed: %s", fileName,
+             lineNum, funcName, expr, detail);
+  } else {
+    snprintf(buf, sizeof(buf), "%s:%u: %s: Assertion `%s' failed", fileName,
+             lineNum, funcName, expr);
+  }
+  return std::string(buf);
 }
 
 void dreamplacePrintAssertMsg(const char* expr, const char* fileName,
@@ -93,8 +153,15 @@ void dreamplacePrintAssertMsg(const char* expr, const char* fileName,
   char buf[1024];
   va_list args;
   va_start(args, format);
-  vsprintf(buf, format, args);
+  int ret = vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
+  if (ret < 0) {
+    buf[0] = '\0';
+  } else if ((std::size_t)ret >= sizeof(buf)) {
+    fprintf(stderr,
+            "[ERROR  ] assertion detail truncated to %zu bytes (%d needed)\n",
+            sizeof(buf), ret);
+  }
 
   // print message
   dreamplacePrintStream(kASSERT, stderr,

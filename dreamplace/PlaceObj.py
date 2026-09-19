@@ -1039,9 +1039,13 @@ class PlaceObj(nn.Module):
         total_movable_area = (
             data_collections.node_size_x[:placedb.num_movable_nodes] *
             data_collections.node_size_y[:placedb.num_movable_nodes]).sum()
-        total_filler_area = (
-            data_collections.node_size_x[-placedb.num_filler_nodes:] *
-            data_collections.node_size_y[-placedb.num_filler_nodes:]).sum()
+        # `[-0:]` is `[0:]` in Python, which would count every node as a filler.
+        if placedb.num_filler_nodes > 0:
+            total_filler_area = (
+                data_collections.node_size_x[-placedb.num_filler_nodes:] *
+                data_collections.node_size_y[-placedb.num_filler_nodes:]).sum()
+        else:
+            total_filler_area = data_collections.node_size_x.new_zeros(())
         total_place_area = (total_movable_area + total_filler_area
                             ) / data_collections.target_density
         adjust_node_area_op = adjust_node_area.AdjustNodeArea(

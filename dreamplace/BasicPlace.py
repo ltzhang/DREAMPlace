@@ -268,6 +268,19 @@ class BasicPlace(nn.Module):
         torch.manual_seed(params.random_seed)
         super(BasicPlace, self).__init__()
 
+        # Structured record of what the placement pipeline actually did, so a
+        # caller can branch on the verdict instead of scraping the log
+        # (contract rule 7).  `legal` stays None until a legality check runs.
+        self.placement_record = {
+            "legal": None,
+            "legalize_requested": bool(params.legalize_flag),
+            "legalize_executed": False,
+            "detailed_requested": bool(params.detailed_place_flag),
+            "detailed_executed": False,
+            "detailed_truncated": False,
+            "final_step": "global",
+        }
+
         tt = time.time()
         self.init_pos = np.zeros(placedb.num_nodes * 2, dtype=placedb.dtype)
         # x position
@@ -809,18 +822,25 @@ class BasicPlace(nn.Module):
             else:
                 pos1 = ml(pos, pos)
             pos2 = gl(pos1, pos1)
-            legal = self.op_collections.legality_check_op(pos2)
+            legal = bool(self.op_collections.legality_check_op(pos2))
+            self.placement_record["legalize_executed"] = True
+            self.placement_record["final_step"] = "greedy-legalize"
             if not legal:
                 logging.error("legality check failed in greedy legalization, " \
                     "return illegal results after greedy legalization.")
+                # The caller must be able to see that this placement is the
+                # legalizer's own rejected result (contract rule 2).
+                self.placement_record["legal"] = False
                 return pos2
+            self.placement_record["legal"] = True
             if params.abacus_legalize_flag: 
                 pos3 = al(pos1, pos2)
-                legal = self.op_collections.legality_check_op(pos3)
+                legal = bool(self.op_collections.legality_check_op(pos3))
                 if not legal:
                     logging.error("legality check failed in abacus legalization, " \
                         "return legal results after greedy legalization.")
                     return pos2
+                self.placement_record["final_step"] = "abacus-legalize"
                 return pos3
             else:
                 return pos2
@@ -1135,10 +1155,11 @@ class BasicPlace(nn.Module):
                 return pos 
 
             pos1 = pos
-            legal = self.op_collections.legality_check_op(pos1)
+            legal = bool(self.op_collections.legality_check_op(pos1))
             logging.info("ABCDPlace input legal flag = %d" %
                          (legal))
             if not legal:
+                self.placement_record["legal"] = False
                 return pos1
 
             # integer factorization to prime numbers
@@ -1197,8 +1218,13 @@ class BasicPlace(nn.Module):
                         "%s produced an ILLEGAL placement; discarding it and returning the last "
                         "legal position. Detailed placement is TRUNCATED here, so the result is "
                         "legal but of lower quality than a full DP pass." % name)
+                    self.placement_record["detailed_truncated"] = True
+                    self.placement_record["detailed_executed"] = True
+                    self.placement_record["final_step"] = "detailed-truncated:%s" % name
                     return last_legal
                 last_legal = candidate
+            self.placement_record["detailed_executed"] = True
+            self.placement_record["final_step"] = "detailed"
             return last_legal
 
         return build_detailed_placement_op

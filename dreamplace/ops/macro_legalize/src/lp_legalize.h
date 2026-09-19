@@ -9,6 +9,7 @@
 
 #include <vector>
 #include <array>
+#include <cmath>
 #include <functional>
 #include <limbo/solvers/DualMinCostFlow.h>
 #include <lemon/list_graph.h>
@@ -535,8 +536,43 @@ void longestPathLegalizeLauncher(LegalizationDB<T> db, const std::vector<int>& m
 /// 
 /// If the input macro solution is not legal, there is no guarantee to find a legal solution. 
 /// But if it is legal, the output should still be legal. 
+/// @brief Commit a staged macro-LP solution into the legalization database.
+/// Every staged coordinate must be finite and inside the placement region;
+/// otherwise nothing is written and the caller declines.
 template <typename T>
-void lpLegalizeGraphLauncher(LegalizationDB<T> db, const std::vector<int>& macros, const std::vector<int>& fixed_macros)
+bool lpLegalizeCommit(LegalizationDB<T>& db, const std::vector<int>& macros,
+                      const std::vector<T>& staged_x, const std::vector<T>& staged_y,
+                      const char* which)
+{
+    for (unsigned int i = 0, ie = macros.size(); i < ie; ++i)
+    {
+        int node_id = macros[i];
+        T x = staged_x[i];
+        T y = staged_y[i];
+        if (!std::isfinite((double)x) || !std::isfinite((double)y))
+        {
+            dreamplacePrint(kERROR, "macro LP (%s): non-finite solution for macro %d; declining, coordinates unchanged\n", which, node_id);
+            return false;
+        }
+        if (x < db.xl || y < db.yl ||
+            x + db.node_size_x[node_id] > db.xh ||
+            y + db.node_size_y[node_id] > db.yh)
+        {
+            dreamplacePrint(kERROR, "macro LP (%s): macro %d solved outside the placement region; declining, coordinates unchanged\n", which, node_id);
+            return false;
+        }
+    }
+    for (unsigned int i = 0, ie = macros.size(); i < ie; ++i)
+    {
+        int node_id = macros[i];
+        db.x[node_id] = staged_x[i];
+        db.y[node_id] = staged_y[i];
+    }
+    return true;
+}
+
+template <typename T>
+bool lpLegalizeGraphLauncher(LegalizationDB<T> db, const std::vector<int>& macros, const std::vector<int>& fixed_macros)
 {
     dreamplacePrint(kINFO, "Legalize movable macros with linear programming on constraint graphs\n");
 
@@ -673,41 +709,60 @@ void lpLegalizeGraphLauncher(LegalizationDB<T> db, const std::vector<int>& macro
     model_vcg.print("vcg.lp");
 #endif
 
+    // Solve both constraint graphs into staging vectors and commit only when
+    // BOTH are solved optimally.  An infeasible or sub-optimal constraint graph
+    // is an ordinary input outcome, not a programming error: the caller keeps
+    // the incoming coordinates and falls through to its next legalizer.
+    std::vector<T> staged_x(macros.size());
+    std::vector<T> staged_y(macros.size());
+
     // solve linear programming for horizontal constraint graph
     {
-        solver_alg_type alg; 
-        solver_type solver (&model_hcg); 
+        solver_alg_type alg;
+        solver_type solver (&model_hcg);
         auto status = solver(&alg);
-        dreamplaceAssertMsg(status == limbo::solvers::OPTIMAL, "Horizontal graph not solved optimally");
+        if (status != limbo::solvers::OPTIMAL)
+        {
+            dreamplacePrint(kERROR, "macro LP (constraint graph): horizontal graph not solved optimally (status %d); declining, coordinates unchanged\n", (int)status);
+            return false;
+        }
 
         for (unsigned int i = 0, ie = macros.size(); i < ie; ++i)
         {
-            int node_id = macros[i];
-            db.x[node_id] = model_hcg.variableSolution(model_hcg.variable(i));
+            staged_x[i] = model_hcg.variableSolution(model_hcg.variable(i));
         }
     }
     // solve linear programming for vertical constraint graph
     {
-        solver_alg_type alg; 
-        solver_type solver (&model_vcg); 
+        solver_alg_type alg;
+        solver_type solver (&model_vcg);
         auto status = solver(&alg);
-        dreamplaceAssertMsg(status == limbo::solvers::OPTIMAL, "Vertical graph not solved optimally");
+        if (status != limbo::solvers::OPTIMAL)
+        {
+            dreamplacePrint(kERROR, "macro LP (constraint graph): vertical graph not solved optimally (status %d); declining, coordinates unchanged\n", (int)status);
+            return false;
+        }
 
         for (unsigned int i = 0, ie = macros.size(); i < ie; ++i)
         {
-            int node_id = macros[i];
-            db.y[node_id] = model_vcg.variableSolution(model_vcg.variable(i));
+            staged_y[i] = model_vcg.variableSolution(model_vcg.variable(i));
         }
+    }
+
+    if (!lpLegalizeCommit(db, macros, staged_x, staged_y, "constraint graph"))
+    {
+        return false;
     }
 
 #ifdef DEBUG
     model_hcg.printSolution("hcg.sol");
     model_vcg.printSolution("vcg.sol");
 #endif
+    return true;
 }
 
 template <typename T>
-void lpLegalizeLauncher(LegalizationDB<T> db, const std::vector<int>& macros, const std::vector<int>& fixed_macros)
+bool lpLegalizeLauncher(LegalizationDB<T> db, const std::vector<int>& macros, const std::vector<int>& fixed_macros)
 {
     dreamplacePrint(kINFO, "Legalize movable macros with linear programming on constraint graphs\n");
 
@@ -929,37 +984,52 @@ void lpLegalizeLauncher(LegalizationDB<T> db, const std::vector<int>& macros, co
     model_vcg.print("vcg.lp");
 //#endif
 
+    std::vector<T> staged_x(macros.size());
+    std::vector<T> staged_y(macros.size());
+
     // solve linear programming for horizontal constraint graph
     {
-        solver_alg_type alg; 
-        solver_type solver (&model_hcg); 
+        solver_alg_type alg;
+        solver_type solver (&model_hcg);
         auto status = solver(&alg);
-        dreamplaceAssertMsg(status == limbo::solvers::OPTIMAL, "Horizontal graph not solved optimally");
+        if (status != limbo::solvers::OPTIMAL)
+        {
+            dreamplacePrint(kERROR, "macro LP (refine): horizontal graph not solved optimally (status %d); declining, coordinates unchanged\n", (int)status);
+            return false;
+        }
 
         for (unsigned int i = 0, ie = macros.size(); i < ie; ++i)
         {
-            int node_id = macros[i];
-            db.x[node_id] = model_hcg.variableSolution(model_hcg.variable(i));
+            staged_x[i] = model_hcg.variableSolution(model_hcg.variable(i));
         }
     }
     // solve linear programming for vertical constraint graph
     {
-        solver_alg_type alg; 
-        solver_type solver (&model_vcg); 
+        solver_alg_type alg;
+        solver_type solver (&model_vcg);
         auto status = solver(&alg);
-        dreamplaceAssertMsg(status == limbo::solvers::OPTIMAL, "Vertical graph not solved optimally");
+        if (status != limbo::solvers::OPTIMAL)
+        {
+            dreamplacePrint(kERROR, "macro LP (refine): vertical graph not solved optimally (status %d); declining, coordinates unchanged\n", (int)status);
+            return false;
+        }
 
         for (unsigned int i = 0, ie = macros.size(); i < ie; ++i)
         {
-            int node_id = macros[i];
-            db.y[node_id] = model_vcg.variableSolution(model_vcg.variable(i));
+            staged_y[i] = model_vcg.variableSolution(model_vcg.variable(i));
         }
+    }
+
+    if (!lpLegalizeCommit(db, macros, staged_x, staged_y, "refine"))
+    {
+        return false;
     }
 
 #ifdef DEBUG
     model_hcg.printSolution("hcg.sol");
     model_vcg.printSolution("vcg.sol");
 #endif
+    return true;
 }
 
 DREAMPLACE_END_NAMESPACE

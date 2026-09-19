@@ -165,10 +165,17 @@ class AdjustNodeArea(nn.Module):
             old_movable_area = node_size_x_movable * node_size_y_movable
             old_movable_area_sum = old_movable_area.sum()
             # compute old areas of filler nodes
-            node_size_x_filler = node_size_x[-self.num_filler_nodes:]
-            node_size_y_filler = node_size_y[-self.num_filler_nodes:]
-            old_filler_area_sum = (node_size_x_filler *
-                                   node_size_y_filler).sum()
+            # Python's -0 is 0, so `[-0:]` would alias the WHOLE node array and
+            # a zero-filler design would silently inflate every fixed cell.
+            if self.num_filler_nodes > 0:
+                node_size_x_filler = node_size_x[-self.num_filler_nodes:]
+                node_size_y_filler = node_size_y[-self.num_filler_nodes:]
+                old_filler_area_sum = (node_size_x_filler *
+                                       node_size_y_filler).sum()
+            else:
+                node_size_x_filler = node_size_x[0:0]
+                node_size_y_filler = node_size_y[0:0]
+                old_filler_area_sum = node_size_x.new_zeros(())
 
             # compute routability optimized area
             if adjust_route_area_flag:
@@ -284,7 +291,9 @@ class AdjustNodeArea(nn.Module):
             # finally scale the filler instance areas to let the total area be self.total_place_area
             # all the filler nodes share the same deflation ratio, filler_nodes_ratio is a scalar
             # we keep the centers the same
-            if new_movable_area_sum + old_filler_area_sum > self.total_place_area:
+            if self.num_filler_nodes > 0 and (
+                    new_movable_area_sum +
+                    old_filler_area_sum > self.total_place_area):
                 new_filler_area_sum = F.relu(self.total_place_area -
                                              new_movable_area_sum)
                 filler_nodes_ratio = new_filler_area_sum / old_filler_area_sum

@@ -41,8 +41,11 @@ at::Tensor hpwl_atomic_forward(at::Tensor pos, at::Tensor pin2net_map,
 
   DREAMPLACE_DISPATCH_FLOATING_TYPES(
       pos, "computeHPWLAtomicLauncher", [&] {
-        partial_hpwl_max[0].fill_(std::numeric_limits<scalar_t>::min());
-        partial_hpwl_max[1].fill_(std::numeric_limits<scalar_t>::min());
+        // lowest(), not min(): for a floating scalar_t, min() is the smallest
+        // positive normal, so an all-negative net would keep the sentinel as
+        // its maximum and report a wrong (inflated) HPWL.
+        partial_hpwl_max[0].fill_(std::numeric_limits<scalar_t>::lowest());
+        partial_hpwl_max[1].fill_(std::numeric_limits<scalar_t>::lowest());
         partial_hpwl_min[0].fill_(std::numeric_limits<scalar_t>::max());
         partial_hpwl_min[1].fill_(std::numeric_limits<scalar_t>::max());
         computeHPWLAtomicLauncher<scalar_t>(
